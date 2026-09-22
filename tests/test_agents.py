@@ -17,7 +17,7 @@ from vulnguard.agents.red_agent import (
     _sanitize_exploit,
 )
 from vulnguard.agents.blue_agent import _check_ast_loc_delta
-from vulnguard.agents.judge_agent import JudgeVerdict, _truncate_error_logs
+from vulnguard.agents.judge_agent import JudgeVerdict, _truncate_error_logs, _validate, judge_agent_node
 
 
 class TestInitialState:
@@ -189,3 +189,33 @@ class TestJudgeVerdict:
 
     def test_pass_is_pass(self):
         assert JudgeVerdict.PASS.value == "PASS"
+
+    def test_missing_docker_returns_static_only_verdict(self):
+        state = initial_state("fn", "def fn():\n    return 1", "python", 90.0, {})
+        state["patched_code"] = "def fn():\n    return 2"
+
+        with patch(
+            "vulnguard.sandbox.docker_runner.check_docker_available",
+            return_value=False,
+        ):
+            verdict, message = _validate(state)
+
+        assert verdict == JudgeVerdict.SANDBOX_UNAVAILABLE
+        assert "Static syntax" in message
+
+    def test_static_only_verdict_completes_without_retry(self):
+        state = initial_state("fn", "def fn():\n    return 1", "python", 90.0, {})
+        state["patched_code"] = "def fn():\n    return 2"
+
+        with patch(
+            "vulnguard.agents.judge_agent._validate",
+            return_value=(JudgeVerdict.SANDBOX_UNAVAILABLE, "static only"),
+        ):
+            result = judge_agent_node(state)
+
+        assert result["pipeline_status"] == "COMPLETE"
+        assert result["judge_verdict"] == "SANDBOX_UNAVAILABLE"
+        assert "attempt_number" not in result
+        assert result["build_success"] is False
+        assert result["test_success"] is False
+        assert result["exploit_blocked"] is False

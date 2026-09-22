@@ -16,6 +16,7 @@ import shlex
 import sys
 import tempfile
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Optional
 from uuid import uuid4
@@ -376,6 +377,7 @@ class DockerRunner:
         return "cd /tmp/workspace && python -m pytest -x 2>&1"
 
 
+@lru_cache(maxsize=1)
 def check_docker_available() -> bool:
     """Check if Docker is available. Returns True if healthy, False otherwise."""
     try:

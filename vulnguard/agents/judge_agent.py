@@ -186,6 +186,22 @@ def _validate(state: VulnGuardState) -> tuple[JudgeVerdict, str]:
     if not patched:
         return JudgeVerdict.BUILD_FAILED, "No patched code provided"
 
+    from vulnguard.data.parser import validate_syntax
+
+    full_code = _get_full_file_code(state, use_patched=True)
+    syntax_ok, syntax_error = validate_syntax(full_code, state.get("language", "python"))
+    if not syntax_ok:
+        return JudgeVerdict.BUILD_FAILED, syntax_error
+
+    from vulnguard.sandbox.docker_runner import check_docker_available
+
+    if not check_docker_available():
+        return (
+            JudgeVerdict.SANDBOX_UNAVAILABLE,
+            "Static syntax and patch guardrail checks passed. Install and start Docker "
+            "to run builds, tests, and exploit validation.",
+        )
+
     repo_root = state.get("repo_root", "")
 
     if repo_root:
@@ -199,15 +215,7 @@ def _validate(state: VulnGuardState) -> tuple[JudgeVerdict, str]:
         if not tests_ok:
             return JudgeVerdict.TESTS_FAILED, _truncate_error_logs(test_logs)
     else:
-        # Single-file upload: no project to build/test.
-        # Do a quick syntax check via Python AST instead.
-        import ast
-        full_code = _get_full_file_code(state, use_patched=True)
-        try:
-            ast.parse(full_code)
-            logger.info("⚖️  AST syntax check passed (single-file mode)")
-        except SyntaxError as e:
-            return JudgeVerdict.BUILD_FAILED, f"Syntax error in patched code: {e}"
+        logger.info("Static syntax check passed (single-file mode)")
 
     # ── Step 3a: Exploit on unpatched (should demonstrate vulnerability) ──
     if state.get("exploit_harness"):
@@ -270,16 +278,17 @@ def judge_agent_node(state: VulnGuardState) -> dict[str, Any]:
     elapsed = time.time() - start
     logger.info("⚖️  Judge verdict: %s (%.1fs)", verdict.value, elapsed)
 
+    sandbox_unavailable = verdict == JudgeVerdict.SANDBOX_UNAVAILABLE
     result: dict[str, Any] = {
         "judge_verdict": verdict.value,
         "error_logs": error_logs,
-        "build_success": verdict != JudgeVerdict.BUILD_FAILED,
-        "test_success": verdict != JudgeVerdict.TESTS_FAILED,
-        "exploit_blocked": verdict not in (JudgeVerdict.EXPLOIT_NOT_BLOCKED,),
+        "build_success": not sandbox_unavailable and verdict != JudgeVerdict.BUILD_FAILED,
+        "test_success": not sandbox_unavailable and verdict != JudgeVerdict.TESTS_FAILED,
+        "exploit_blocked": not sandbox_unavailable and verdict != JudgeVerdict.EXPLOIT_NOT_BLOCKED,
         "timestamps": {**state.get("timestamps", {}), "judge_end": time.time()},
     }
 
-    if verdict == JudgeVerdict.PASS:
+    if verdict in (JudgeVerdict.PASS, JudgeVerdict.SANDBOX_UNAVAILABLE):
         result["pipeline_status"] = "COMPLETE"
     elif verdict == JudgeVerdict.EXPLOIT_NOT_REPRODUCED:
         result["pipeline_status"] = "FAILED"

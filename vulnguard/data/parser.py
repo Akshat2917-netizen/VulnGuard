@@ -135,6 +135,20 @@ def _parser_for(language: str) -> Parser:
     return Parser(Language(module.language()))
 
 
+def validate_syntax(source_code: str, language: str) -> tuple[bool, str]:
+    """Validate complete source text with the configured Tree-sitter grammar."""
+    source = source_code.encode("utf-8")
+    root = _parser_for(language).parse(source).root_node
+    if not root.has_error:
+        return True, ""
+    invalid = next(
+        (node for node in _walk(root) if node.is_error or node.is_missing),
+        root,
+    )
+    line, column = invalid.start_point
+    return False, f"Syntax error near line {line + 1}, column {column + 1}"
+
+
 def _identifier(node: Node | None, source: bytes) -> str | None:
     if node is None:
         return None

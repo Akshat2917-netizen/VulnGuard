@@ -1,6 +1,6 @@
 import pytest
 
-from vulnguard.data.parser import detect_language, parse_file
+from vulnguard.data.parser import detect_language, parse_file, validate_syntax
 
 
 @pytest.mark.parametrize(
@@ -40,3 +40,10 @@ def test_javascript_arrow_function():
 def test_class_name_is_preserved():
     units = parse_file("app.py", "class Service:\n    def run(self):\n        return 1\n")
     assert units[0].class_name == "Service"
+
+
+def test_syntax_validation_is_language_aware():
+    assert validate_syntax("int main(void) { return 0; }", "c")[0] is True
+    valid, error = validate_syntax("def broken(:\n    pass", "python")
+    assert valid is False
+    assert "Syntax error" in error

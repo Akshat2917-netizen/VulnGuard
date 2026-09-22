@@ -68,6 +68,10 @@ python -m vulnguard.main scan vulnerable_app.py --no-docker
 Remove `--no-docker` when Docker Desktop is running and sandbox verification is
 required.
 
+Without Docker, the Judge performs syntax and patch guardrail checks and reports
+`SANDBOX_UNAVAILABLE`. Install Docker for build, test, and exploit validation;
+static-only results are not counted as validated patches.
+
 ## Run a repository benchmark
 
 ```powershell
