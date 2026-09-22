@@ -33,6 +33,7 @@ class ApproachMetrics:
     total_time_seconds: float = 0.0
     false_positives: int = 0
     false_negatives: int = 0
+    ground_truth_available: bool = False
 
     @property
     def detection_rate(self) -> float:
@@ -55,12 +56,16 @@ class ApproachMetrics:
         return self.total_time_seconds / max(self.patches_validated, 1)
 
     @property
-    def precision(self) -> float:
+    def precision(self) -> Optional[float]:
+        if not self.ground_truth_available:
+            return None
         tp = self.vulnerabilities_detected - self.false_positives
         return max(tp, 0) / max(self.vulnerabilities_detected, 1)
 
     @property
-    def recall(self) -> float:
+    def recall(self) -> Optional[float]:
+        if not self.ground_truth_available:
+            return None
         tp = self.vulnerabilities_detected - self.false_positives
         fn = self.false_negatives
         return max(tp, 0) / max(tp + fn, 1)
@@ -80,8 +85,8 @@ class ApproachMetrics:
             "avg_tokens_per_fix": round(self.avg_tokens_per_fix, 1),
             "total_time_seconds": round(self.total_time_seconds, 2),
             "avg_time_per_fix_seconds": round(self.avg_time_per_fix, 2),
-            "precision": round(self.precision, 4),
-            "recall": round(self.recall, 4),
+            "precision": round(self.precision, 4) if self.precision is not None else None,
+            "recall": round(self.recall, 4) if self.recall is not None else None,
         }
 
 
@@ -126,8 +131,8 @@ class BenchmarkReport:
                 f"{d['regression_rate']:.1%}",
                 f"{d['avg_tokens_per_fix']:.0f}",
                 f"{d['avg_time_per_fix_seconds']:.1f}",
-                f"{d['precision']:.1%}",
-                f"{d['recall']:.1%}",
+                f"{d['precision']:.1%}" if d["precision"] is not None else "N/A",
+                f"{d['recall']:.1%}" if d["recall"] is not None else "N/A",
             ])
 
         # Build markdown table
@@ -237,7 +242,10 @@ class Vul4JBenchmark:
             "total_entries": len(entries),
         }
 
-        metrics = ApproachMetrics(approach_name="VulnGuard (Multi-Agent)")
+        metrics = ApproachMetrics(
+            approach_name="VulnGuard (Multi-Agent)",
+            ground_truth_available=True,
+        )
         metrics.total_functions = len(entries)
 
         for entry in entries:
@@ -246,6 +254,8 @@ class Vul4JBenchmark:
 
             if result.get("vulnerability_detected"):
                 metrics.vulnerabilities_detected += 1
+            else:
+                metrics.false_negatives += 1
             if result.get("patch_generated"):
                 metrics.patches_generated += 1
             if result.get("pov_test_passed"):

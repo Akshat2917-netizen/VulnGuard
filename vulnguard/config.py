@@ -122,7 +122,7 @@ class SandboxConfig:
     pids_limit: int = 64
     network_mode: str = "none"
     execution_timeout_seconds: int = _env_int("VULNGUARD_DOCKER_TIMEOUT", 60)
-    sandbox_image: str = _env("VULNGUARD_SANDBOX_IMAGE", "python:3.11-slim")
+    sandbox_image: str = _env("VULNGUARD_SANDBOX_IMAGE", "vulnguard-sandbox:latest")
     env_file: Optional[str] = _env("VULNGUARD_ENV_FILE") or None
 
 

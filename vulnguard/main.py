@@ -57,6 +57,13 @@ def cmd_train(args):
 def cmd_scan(args):
     """Scan a repository or specific function for vulnerabilities."""
     from vulnguard.data.context_gatherer import gather_context
+    from vulnguard.data.parser import (
+        CodeUnit,
+        detect_language,
+        iter_source_files,
+        parse_file,
+        read_source_file,
+    )
     from vulnguard.models.risk_scorer import RiskScorer
 
     _setup_logging(args.verbose)
@@ -67,17 +74,14 @@ def cmd_scan(args):
         logger.error("Path does not exist: %s", repo_path)
         sys.exit(1)
 
-    # Detect language from file extension
-    lang_map = {".c": "c", ".h": "c", ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp",
-                ".py": "python", ".java": "java", ".js": "javascript", ".ts": "typescript"}
-
-
     # ── Single file scan ──────────────────────────────────
     if repo_path.is_file():
-        ext = repo_path.suffix.lower()
-        language = lang_map.get(ext, "c")
+        language = detect_language(repo_path)
+        if not language:
+            logger.error("Unsupported source file: %s", repo_path)
+            return
 
-        code = repo_path.read_text(encoding="utf-8", errors="replace")
+        code = read_source_file(repo_path)
 
         try:
             from vulnguard.models.risk_scorer import RiskScorer
@@ -88,23 +92,22 @@ def cmd_scan(args):
             scorer = None
             threshold = args.threshold if args.threshold is not None else cfg.triage.risk_threshold
 
-        if language == "python":
-            from vulnguard.data.parser import parse_python_file
-            chunks = parse_python_file(str(repo_path), code)
-            logger.info("Parsed %d functions from %s", len(chunks), repo_path.name)
-        else:
-            # Fake a chunk for non-Python for now
-            from dataclasses import dataclass, field
-            @dataclass
-            class MockCU:
-                function_name: str = repo_path.name
-                raw_source: str = code
-                language: str = language
-                start_byte: int = 0
-                end_byte: int = len(code)
-                imports: list[str] = field(default_factory=list)
-                callees: list[str] = field(default_factory=list)
-            chunks = [MockCU()]
+        chunks = parse_file(str(repo_path), code, language)
+        if not chunks:
+            chunks = [
+                CodeUnit(
+                    file_path=str(repo_path),
+                    function_name=repo_path.name,
+                    class_name=None,
+                    start_byte=0,
+                    end_byte=len(code.encode("utf-8")),
+                    start_line=1,
+                    end_line=len(code.splitlines()),
+                    raw_source=code,
+                    language=language,
+                )
+            ]
+        logger.info("Parsed %d functions from %s", len(chunks), repo_path.name)
 
         for chunk in chunks:
             if scorer:
@@ -187,9 +190,7 @@ def cmd_scan(args):
     else:
         # ── Directory scan — find all source files ────────
         logger.info("Scanning repository: %s", repo_path)
-        source_files = []
-        for ext, lang in lang_map.items():
-            source_files.extend((f, lang) for f in repo_path.rglob(f"*{ext}"))
+        source_files = list(iter_source_files(repo_path))
 
         logger.info("Found %d source files", len(source_files))
 
@@ -203,37 +204,50 @@ def cmd_scan(args):
             logger.warning("No trained model — all files will be scanned")
 
         high_risk = []
-        for filepath, language in source_files:
-            code = filepath.read_text(encoding="utf-8", errors="replace")
-            if scorer:
-                result = scorer.score(code, language)
-                if result.risk_score >= threshold:
-                    high_risk.append((filepath, language, result.risk_score, code))
-            else:
-                high_risk.append((filepath, language, 100.0, code))
+        total_functions = 0
+        for filepath in source_files:
+            language = detect_language(filepath)
+            if not language:
+                continue
+            code = read_source_file(filepath)
+            chunks = parse_file(str(filepath), code, language)
+            if not chunks:
+                continue
+            total_functions += len(chunks)
+            for chunk in chunks:
+                if scorer:
+                    result = scorer.score(chunk.raw_source, language)
+                    if result.risk_score >= threshold or result.bypass_reason:
+                        high_risk.append((filepath, chunk, result.risk_score))
+                else:
+                    high_risk.append((filepath, chunk, 100.0))
 
-        logger.info("%d/%d files above threshold (%d)", len(high_risk), len(source_files), threshold)
+        logger.info("%d/%d functions above threshold (%d)", len(high_risk), total_functions, threshold)
 
-        for filepath, language, score, code in high_risk:
+        for filepath, chunk, score in high_risk:
             logger.info("─" * 60)
-            logger.info("Scanning: %s (risk: %.1f)", filepath.name, score)
+            logger.info("Scanning: %s:%s (risk: %.1f)", filepath.name, chunk.function_name, score)
 
             ctx = gather_context(
-                func_code=code,
+                func_code=chunk.raw_source,
                 file_path=filepath,
                 repo_root=repo_path,
-                language=language,
+                language=chunk.language,
             )
+            ctx.imports.extend(chunk.imports)
+            ctx.callee_signatures.extend(chunk.callees)
 
             from vulnguard.agents.graph import run_pipeline
             final_state = run_pipeline(
-                function_id=filepath.name,
-                code=code,
-                language=language,
+                function_id=f"{filepath.relative_to(repo_path).as_posix()}:{chunk.function_name}",
+                code=chunk.raw_source,
+                language=chunk.language,
                 risk_score=score,
                 context_bundle=ctx.to_dict(),
                 file_path=str(filepath),
                 repo_root=str(repo_path),
+                start_byte=chunk.start_byte,
+                end_byte=chunk.end_byte,
                 max_attempts=args.max_retries,
             )
             _print_scan_result(final_state)
@@ -264,9 +278,18 @@ def _print_scan_result(state: dict):
 def cmd_benchmark(args):
     """Run comparative benchmarks."""
     _setup_logging(args.verbose)
-    logger = logging.getLogger("vulnguard.benchmark")
-    logger.info("Benchmark mode — not yet fully implemented")
-    logger.info("Use promptfoo with promptfooconfig.yaml for LLM benchmarks")
+    from vulnguard.benchmarks.runner import benchmark_repository
+
+    repo_path = Path(args.repo_path).resolve()
+    output_dir = Path(args.output_dir).resolve()
+    report = benchmark_repository(repo_path, max_files=args.max_files, threshold=args.threshold)
+    json_path = output_dir / "benchmark.json"
+    markdown_path = output_dir / "benchmark.md"
+    report.to_json(json_path)
+    report.to_markdown(markdown_path)
+    print(report.to_markdown())
+    print(f"JSON: {json_path}")
+    print(f"Markdown: {markdown_path}")
 
 
 # ── Subcommand: dashboard ────────────────────────────────────────────────
@@ -317,7 +340,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # benchmark
     p_bench = sub.add_parser("benchmark", help="Run comparative benchmarks")
-    p_bench.add_argument("repo_path", nargs="?", help="Path to repository")
+    p_bench.add_argument("repo_path", nargs="?", default="data/test_vulns", help="Path to repository")
+    p_bench.add_argument("--max-files", type=int, default=100, help="Maximum source files to benchmark")
+    p_bench.add_argument("--threshold", type=int, default=None, help="Risk threshold override (0-100)")
+    p_bench.add_argument("--output-dir", default="data/benchmarks", help="Report output directory")
     p_bench.set_defaults(func=cmd_benchmark)
 
     # dashboard

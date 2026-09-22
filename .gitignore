@@ -1,5 +1,8 @@
 .env
 data/cache/
+data/uploads/
+data/vulnguard.db*
+data/benchmarks*/
 *.parquet
 **/__pycache__/
 *.pyc

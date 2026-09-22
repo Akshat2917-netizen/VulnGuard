@@ -31,10 +31,9 @@ class TestRiskScorerLanguageRouting:
                 scorer = RiskScorer.__new__(RiskScorer)
                 scorer._model = mock_model
 
-                # Python is not in _ML_SUPPORTED_LANGUAGES
-                result = scorer.score("def foo(): pass", language="python")
+                result = scorer.score("public void foo() {}", language="java")
                 assert result.risk_score == 100.0
-                assert "LANGUAGE_UNSUPPORTED" in (result.bypass_reason or "")
+                assert result.bypass_reason == "LANGUAGE_UNSUPPORTED:java"
 
     def test_supported_language_uses_model(self):
         from vulnguard.models.risk_scorer import RiskScorer

@@ -11,9 +11,11 @@ from unittest.mock import patch, MagicMock
 
 from vulnguard.sandbox.docker_runner import (
     _to_docker_mount_path,
+    _workspace_relative_path,
     DockerNotAvailableError,
     CommandResult,
     DockerRunner,
+    check_docker_available,
 )
 
 
@@ -88,3 +90,53 @@ class TestBuildCommandDetection:
     def test_no_build_system(self, tmp_path):
         cmd = DockerRunner._detect_build_command(str(tmp_path))
         assert "No build system" in cmd
+
+
+class TestSandboxCommands:
+    def test_test_failures_are_not_masked(self, tmp_path):
+        assert "|| true" not in DockerRunner._detect_test_command(str(tmp_path))
+
+    def test_workspace_path_is_relative(self, tmp_path):
+        target = tmp_path / "src" / "app.py"
+        target.parent.mkdir()
+        target.write_text("pass")
+        assert _workspace_relative_path(str(target), str(tmp_path)) == "src/app.py"
+
+    def test_workspace_path_rejects_external_file(self, tmp_path):
+        with pytest.raises(ValueError, match="inside the repository"):
+            _workspace_relative_path(str(tmp_path.parent / "outside.py"), str(tmp_path))
+
+    def test_files_are_mounted_read_only_before_container_starts(self):
+        runner = DockerRunner.__new__(DockerRunner)
+        runner._client = MagicMock()
+        container = runner._client.containers.create.return_value
+        container.wait.return_value = {"StatusCode": 0}
+        container.logs.return_value = b""
+
+        result = runner._run_container("echo OK", extra_files={"/tmp/input.py": "pass"})
+
+        assert result.success is True
+        calls = [call[0] for call in container.method_calls]
+        assert calls.index("start") < calls.index("wait")
+
+        kwargs = runner._client.containers.create.call_args.kwargs
+        assert any(
+            volume == {"bind": "/vulnguard_inputs", "mode": "ro"}
+            for volume in kwargs["volumes"].values()
+        )
+        assert kwargs["user"] == "65534:65534"
+        assert kwargs["cap_drop"] == ["ALL"]
+        assert kwargs["network_mode"] == "none"
+        assert kwargs["read_only"] is True
+
+
+@pytest.mark.docker
+def test_sandbox_executes_as_unprivileged_user():
+    if not check_docker_available():
+        pytest.skip("Docker daemon is not available")
+
+    runner = DockerRunner()
+    result = runner._run_container("test \"$(id -u)\" = 65534 && echo SANDBOX_OK")
+
+    assert result.success, result.combined_output
+    assert "SANDBOX_OK" in result.stdout

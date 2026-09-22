@@ -11,6 +11,8 @@ from unittest.mock import patch, MagicMock
 from vulnguard.agents.state import VulnGuardState, initial_state
 from vulnguard.agents.red_agent import (
     RedAgentReport,
+    _call_llm,
+    red_agent_node,
     _validate_exploit_language,
     _sanitize_exploit,
 )
@@ -66,6 +68,30 @@ class TestRedAgentReport:
         json_str = report.model_dump_json()
         parsed = RedAgentReport.model_validate_json(json_str)
         assert parsed.vulnerability_type == "XSS"
+
+    def test_mock_response_matches_schema(self):
+        with patch("vulnguard.agents.red_agent.cfg") as mock_cfg:
+            mock_cfg.llm.mock_mode = True
+            response = _call_llm([], risk_score=100.0)
+
+        report = RedAgentReport.model_validate_json(response)
+        assert report.vulnerability_found is True
+        assert report.exploit_code_harness
+
+    def test_schema_wrapped_response_is_unwrapped(self):
+        state = initial_state("fn", "def fn():\n    pass", "python", 90.0, {})
+        response = json.dumps(
+            {
+                "description": "Structured threat report",
+                "properties": {"vulnerability_found": False},
+            }
+        )
+
+        with patch("vulnguard.agents.red_agent._call_llm", return_value=response):
+            result = red_agent_node(state)
+
+        assert result["pipeline_status"] == "RED_COMPLETE"
+        assert result["vulnerability_found"] is False
 
 
 class TestExploitLanguageValidation:

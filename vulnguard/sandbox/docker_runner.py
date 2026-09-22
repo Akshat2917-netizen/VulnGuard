@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import shlex
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -74,6 +75,15 @@ def _to_docker_mount_path(host_path: str) -> str:
     return str(posix)
 
 
+def _workspace_relative_path(file_path: str, repo_root: str) -> str:
+    """Return a safe POSIX path for a file contained by the repository."""
+    try:
+        relative = Path(file_path).resolve().relative_to(Path(repo_root).resolve())
+    except ValueError as exc:
+        raise ValueError("Target file must be inside the repository root") from exc
+    return relative.as_posix()
+
+
 # ── Docker client singleton ──────────────────────────────────────────────
 
 _docker_client = None
@@ -127,39 +137,64 @@ class DockerRunner:
         """
         timeout = timeout or cfg.sandbox.execution_timeout_seconds
         container_name = f"vulnguard_sandbox_{uuid4().hex[:8]}"
+        archive_files = dict(extra_files or {})
+        seed_copies: list[str] = []
+        input_dir = tempfile.TemporaryDirectory(prefix="vulnguard_inputs_")
+        input_root = Path(input_dir.name)
+
+        for index, (target_path, content) in enumerate(archive_files.items()):
+            seed_name = f"{index}_{PurePosixPath(target_path).name}"
+            (input_root / seed_name).write_text(content, encoding="utf-8")
+            seed_path = f"/vulnguard_inputs/{seed_name}"
+            seed_copies.append(
+                f"mkdir -p {shlex.quote(str(PurePosixPath(target_path).parent))} && "
+                f"cp -- {shlex.quote(seed_path)} {shlex.quote(target_path)}"
+            )
+        (input_root / "vulnguard_run.sh").write_text(
+            f"set -eu\n{command}\n",
+            encoding="utf-8",
+        )
+        os.chmod(input_root, 0o755)
+
+        workspace_setup = "mkdir -p /tmp/workspace"
+        if repo_root and os.path.isdir(repo_root):
+            workspace_setup += " && cp -R /host_workspace/. /tmp/workspace/"
+        setup_command = " && ".join([workspace_setup, *seed_copies])
 
         # Build container config (Section 4.3 security constraints)
         run_kwargs: dict = {
             "image": cfg.sandbox.sandbox_image,
-            "command": ["sh", "-c", command],
+            "command": [
+                "sh",
+                "-c",
+                f"{setup_command} && cd /tmp/workspace && "
+                "sh /vulnguard_inputs/vulnguard_run.sh",
+            ],
             "name": container_name,
             "mem_limit": cfg.sandbox.memory_limit,
             "cpu_count": cfg.sandbox.cpu_count,
             "pids_limit": cfg.sandbox.pids_limit,
             "network_mode": cfg.sandbox.network_mode,
-            "read_only": False,
-            "tmpfs": {"/tmp": "size=100m,exec"},
+            "read_only": True,
+            "tmpfs": {"/tmp": "size=100m,exec,uid=65534,gid=65534,mode=1777"},
+            "user": "65534:65534",
+            "volumes": {
+                _to_docker_mount_path(input_dir.name): {
+                    "bind": "/vulnguard_inputs",
+                    "mode": "ro",
+                },
+            },
             "auto_remove": False,  # We need to fetch logs before removal
-            "detach": True,
             "cap_drop": ["ALL"],
         }
 
         # Mount repo if provided
         if repo_root and os.path.isdir(repo_root):
             mount_path = _to_docker_mount_path(repo_root)
-            run_kwargs["volumes"] = {
-                mount_path: {"bind": "/host_workspace", "mode": "ro"},
-            }
-            # Manually create workspace as root, chown, and drop privileges
-            escaped_command = command.replace('"', '\\"')
-            run_kwargs["command"] = [
-                "sh", "-c",
-                f"mkdir -p /tmp/workspace && cp -R /host_workspace/. /tmp/workspace/ 2>/dev/null || true; chown -R nobody /tmp/workspace 2>/dev/null || true; su -s /bin/sh nobody -c \"cd /tmp/workspace && {escaped_command}\""
-            ]
-            # Removed working_dir to prevent Docker from creating it as root
+            run_kwargs["volumes"][mount_path] = {"bind": "/host_workspace", "mode": "ro"}
 
         # Environment variables (EC-8.2)
-        env = {}
+        env = {"HOME": "/tmp"}
         if cfg.sandbox.env_file and os.path.isfile(cfg.sandbox.env_file):
             with open(cfg.sandbox.env_file) as f:
                 for line in f:
@@ -174,22 +209,8 @@ class DockerRunner:
 
         container = None
         try:
-            container = self._client.containers.run(**run_kwargs)
-
-            # Write extra files to /tmp inside container if needed
-            if extra_files:
-                import tarfile
-                import io
-
-                tar_buf = io.BytesIO()
-                with tarfile.open(fileobj=tar_buf, mode="w") as tar:
-                    for path, content in extra_files.items():
-                        data = content.encode("utf-8")
-                        info = tarfile.TarInfo(name=Path(path).name)
-                        info.size = len(data)
-                        tar.addfile(info, io.BytesIO(data))
-                tar_buf.seek(0)
-                container.put_archive("/tmp", tar_buf)
+            container = self._client.containers.create(**run_kwargs)
+            container.start()
 
             # Wait for completion
             result = container.wait(timeout=timeout)
@@ -219,6 +240,7 @@ class DockerRunner:
                     container.remove(force=True)
                 except Exception:
                     pass
+            input_dir.cleanup()
 
     def run_build(
         self,
@@ -237,12 +259,13 @@ class DockerRunner:
 
         extra = {}
         if file_path and code:
-            # Write patched file to /tmp and copy it to the right location
             container_file = f"/tmp/patched_{Path(file_path).name}"
             extra[container_file] = code
-            # Prepend copy command
-            rel_path = os.path.relpath(file_path, repo_root) if repo_root else Path(file_path).name
-            build_command = f"cp {container_file} /tmp/workspace/{rel_path} 2>/dev/null; {build_command}"
+            rel_path = _workspace_relative_path(file_path, repo_root)
+            destination = f"/tmp/workspace/{rel_path}"
+            build_command = (
+                f"cp -- {shlex.quote(container_file)} {shlex.quote(destination)} && {build_command}"
+            )
 
         return self._run_container(
             command=build_command,
@@ -254,14 +277,27 @@ class DockerRunner:
         self,
         repo_root: str,
         test_command: str = "",
+        file_path: str = "",
+        code: str = "",
     ) -> CommandResult:
         """Run the project's test suite."""
         if not test_command:
             test_command = self._detect_test_command(repo_root)
 
+        extra = {}
+        if file_path and code:
+            container_file = f"/tmp/patched_{Path(file_path).name}"
+            extra[container_file] = code
+            rel_path = _workspace_relative_path(file_path, repo_root)
+            destination = f"/tmp/workspace/{rel_path}"
+            test_command = (
+                f"cp -- {shlex.quote(container_file)} {shlex.quote(destination)} && {test_command}"
+            )
+
         return self._run_container(
             command=test_command,
             repo_root=repo_root,
+            extra_files=extra if extra else None,
         )
 
     def run_exploit(
@@ -293,8 +329,14 @@ class DockerRunner:
 
         extra = {exploit_file: exploit_code}
         if target_code and file_path:
-            container_file = f"/tmp/target_{Path(file_path).name}"
+            container_file = f"/tmp/{Path(file_path).name}"
             extra[container_file] = target_code
+            if repo_root:
+                rel_path = _workspace_relative_path(file_path, repo_root)
+                destination = f"/tmp/workspace/{rel_path}"
+                run_cmd = (
+                    f"cp -- {shlex.quote(container_file)} {shlex.quote(destination)} && {run_cmd}"
+                )
 
         return self._run_container(
             command=run_cmd,
@@ -323,15 +365,15 @@ class DockerRunner:
         """Auto-detect test command from repo files."""
         root = Path(repo_root)
         if (root / "Makefile").exists():
-            return "make test 2>&1 || true"
+            return "make test 2>&1"
         if (root / "setup.py").exists() or (root / "pyproject.toml").exists():
-            return "cd /tmp/workspace && python -m pytest -x 2>&1 || true"
+            return "cd /tmp/workspace && python -m pytest -x 2>&1"
         if (root / "package.json").exists():
-            return "cd /tmp/workspace && npm test 2>&1 || true"
+            return "cd /tmp/workspace && npm test 2>&1"
         if (root / "pom.xml").exists():
-            return "cd /tmp/workspace && mvn test 2>&1 || true"
+            return "cd /tmp/workspace && mvn test 2>&1"
         # Fallback to pytest for Python MVP
-        return "cd /tmp/workspace && python -m pytest -x 2>&1 || true"
+        return "cd /tmp/workspace && python -m pytest -x 2>&1"
 
 
 def check_docker_available() -> bool:

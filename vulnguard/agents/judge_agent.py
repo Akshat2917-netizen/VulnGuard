@@ -25,6 +25,7 @@ class JudgeVerdict(str, Enum):
     PASS = "PASS"
     BUILD_FAILED = "BUILD_FAILED"
     TESTS_FAILED = "TESTS_FAILED"
+    EXPLOIT_NOT_REPRODUCED = "EXPLOIT_NOT_REPRODUCED"
     EXPLOIT_NOT_BLOCKED = "EXPLOIT_NOT_BLOCKED"
     DESTRUCTIVE_PATCH_REJECTED = "DESTRUCTIVE_PATCH_REJECTED"
     NEW_VULNERABILITY_INTRODUCED = "NEW_VULNERABILITY_INTRODUCED"
@@ -123,7 +124,11 @@ def _run_tests(state: VulnGuardState) -> tuple[bool, str]:
         from vulnguard.sandbox.docker_runner import DockerRunner
 
         runner = DockerRunner()
-        result = runner.run_tests(repo_root=state.get("repo_root", ""))
+        result = runner.run_tests(
+            repo_root=state.get("repo_root", ""),
+            file_path=state.get("file_path", ""),
+            code=_get_full_file_code(state, use_patched=True),
+        )
         return result.success, result.combined_output
     except ImportError:
         logger.info("Docker not available — skipping test suite")
@@ -220,7 +225,7 @@ def _validate(state: VulnGuardState) -> tuple[JudgeVerdict, str]:
 
         unpatched_ok, unpatched_logs = _run_exploit(state, use_patched=False)
         if not exploit_succeeded(unpatched_ok, unpatched_logs):
-            logger.warning("Exploit did NOT trigger on unpatched code — PoC may be invalid")
+            return JudgeVerdict.EXPLOIT_NOT_REPRODUCED, _truncate_error_logs(unpatched_logs)
 
         # ── Step 3b: Exploit on patched (should NOT trigger) ────
         patched_ok, patched_logs = _run_exploit(state, use_patched=True)
@@ -276,6 +281,8 @@ def judge_agent_node(state: VulnGuardState) -> dict[str, Any]:
 
     if verdict == JudgeVerdict.PASS:
         result["pipeline_status"] = "COMPLETE"
+    elif verdict == JudgeVerdict.EXPLOIT_NOT_REPRODUCED:
+        result["pipeline_status"] = "FAILED"
     elif attempt + 1 >= state.get("max_attempts", 3):
         result["pipeline_status"] = "FAILED"
         result["judge_verdict"] = JudgeVerdict.MAX_RETRIES_EXHAUSTED.value

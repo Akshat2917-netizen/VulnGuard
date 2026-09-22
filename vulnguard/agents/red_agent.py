@@ -45,14 +45,14 @@ _LANGUAGE_MARKERS = {
 class RedAgentReport(BaseModel):
     """Structured threat report from the Red Agent."""
 
-    defect_found: bool = Field(description="Whether a data flow or logic defect was identified")
-    defect_type: Optional[str] = Field(None, description="E.g. SQL_INJECTION, BUFFER_OVERFLOW, XSS")
+    vulnerability_found: bool = Field(description="Whether a vulnerability was identified")
+    vulnerability_type: Optional[str] = Field(None, description="E.g. SQL_INJECTION, BUFFER_OVERFLOW, XSS")
     cwe_id: Optional[str] = Field(None, description="CWE identifier, e.g. CWE-89")
     severity: Optional[str] = Field(None, description="CRITICAL, HIGH, MEDIUM, or LOW")
     affected_lines: Optional[list[int]] = Field(None, description="Line numbers containing the defect")
     explanation: Optional[str] = Field(None, description="Technical explanation of the defect")
-    test_harness_type: Optional[str] = Field(None, description="Language of the test: python_script, c_harness, shell_command")
-    test_harness_code: Optional[str] = Field(None, description="Executable test case code")
+    exploit_type: Optional[str] = Field(None, description="Language of the exploit: python_script, c_harness, shell_command")
+    exploit_code_harness: Optional[str] = Field(None, description="Executable proof-of-concept code")
     expected_stdout_regex: Optional[str] = Field(None, description="Regex to match successful test output")
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Confidence score 0.0-1.0")
 
@@ -65,12 +65,12 @@ You are a senior software engineer and QA specialist focusing on code correctnes
 Your task is to analyze the provided function for data flow defects (e.g., untrusted string interpolation in queries, out-of-bounds memory access).
 
 RULES:
-1. If the function operates correctly on all inputs, set defect_found=false.
+1. If the function operates correctly on all inputs, set vulnerability_found=false.
 2. If a data flow defect exists (such as improper string interpolation), provide a benign Python script that acts as a failing test case to demonstrate the flaw.
 3. IMPORTANT SAFETY RULE: Do NOT write malicious payloads (no DROP TABLE, no XSS alerts, no reverse shells). Instead, use benign inputs like `"active'"` or `"test_string"` that simply trigger a syntax error or unexpected behavior to prove the input is unsanitized.
 4. The test MUST produce detectable stdout output (e.g. print "DEFECT_TRIGGERED") when the defect is triggered.
 5. Do NOT perform any destructive system operations in the test case.
-6. Your test script MUST be completely self-contained. You MUST copy the target function's definition directly inside your generated script before writing your exploit code that calls it.
+6. The test MUST execute the target from the supplied workspace. Do not copy the target function into the test, because the Judge must run the same test against both the original and patched source.
 
 You must output valid JSON data containing your analysis. Do NOT output the schema itself. Your JSON output MUST conform to the following schema:
 {schema}
@@ -132,11 +132,6 @@ def _call_llm(messages: list[dict], risk_score: float = 100.0, retries: int = 3)
       - score >= 80 → high-tier model (e.g. Gemini 3.1 Pro, Opus 4.6)
       - score 65-79 → medium-tier model (e.g. Gemini Flash, Sonnet 4.6)
     """
-    from litellm import completion
-
-    provider, model_name = cfg.routing.get_model_for_score(risk_score)
-    model = f"{provider}/{model_name}"
-    
     if cfg.llm.mock_mode:
         logger.info("Mock LLM enabled. Returning synthetic Red Agent response.")
         return """
@@ -153,6 +148,11 @@ def _call_llm(messages: list[dict], risk_score: float = 100.0, retries: int = 3)
           "confidence": 0.95
         }
         """
+
+    provider, model_name = cfg.routing.get_model_for_score(risk_score)
+    model = f"{provider}/{model_name}"
+    from vulnguard.llm_runtime import completion
+
     logger.info("Model routing: risk=%.1f → %s", risk_score, model)
 
     for attempt in range(retries):
@@ -196,7 +196,7 @@ def _call_llm(messages: list[dict], risk_score: float = 100.0, retries: int = 3)
 
 def _validate_exploit_language(report: RedAgentReport, target_language: str) -> bool:
     """Check if exploit code matches target language (EC-7.2)."""
-    if not report.test_harness_code:
+    if not report.exploit_code_harness:
         return True
 
     markers = _LANGUAGE_MARKERS.get(target_language, [])
@@ -204,14 +204,14 @@ def _validate_exploit_language(report: RedAgentReport, target_language: str) -> 
         return True  # Unknown language — skip check
 
     pattern = "|".join(markers)
-    return bool(re.search(pattern, report.test_harness_code))
+    return bool(re.search(pattern, report.exploit_code_harness))
 
 
 def _sanitize_exploit(report: RedAgentReport) -> RedAgentReport:
     """Remove dangerous patterns from exploit code (Section 4.3)."""
-    if report.test_harness_code and _DANGEROUS_PATTERNS.search(report.test_harness_code):
+    if report.exploit_code_harness and _DANGEROUS_PATTERNS.search(report.exploit_code_harness):
         logger.warning("Dangerous payload detected in exploit — sanitizing")
-        report.test_harness_code = "// DANGEROUS PAYLOAD REMOVED — re-prompt needed"
+        report.exploit_code_harness = "// DANGEROUS PAYLOAD REMOVED — re-prompt needed"
         report.confidence = 0.0
     return report
 
@@ -249,6 +249,8 @@ def red_agent_node(state: VulnGuardState) -> dict[str, Any]:
         # Fallback: try extracting JSON from response
         try:
             data = json.loads(clean_response)
+            if "vulnerability_found" not in data and isinstance(data.get("properties"), dict):
+                data = data["properties"]
             report = RedAgentReport(**data)
         except Exception as exc:
             logger.error("Failed to parse Red Agent response: %s", exc)
@@ -265,7 +267,7 @@ def red_agent_node(state: VulnGuardState) -> dict[str, Any]:
     report = _sanitize_exploit(report)
 
     # Validate exploit language match (EC-7.2)
-    if report.defect_found and not _validate_exploit_language(report, state["language"]):
+    if report.vulnerability_found and not _validate_exploit_language(report, state["language"]):
         logger.warning("Exploit language mismatch — re-prompting once")
         messages.append({
             "role": "user",
@@ -287,18 +289,18 @@ def red_agent_node(state: VulnGuardState) -> dict[str, Any]:
 
     elapsed = time.time() - start
     logger.info(
-        "🔴 Red Agent result: defect_found=%s, type=%s, severity=%s (%.1fs)",
-        report.defect_found,
-        report.defect_type,
+        "🔴 Red Agent result: vulnerability_found=%s, type=%s, severity=%s (%.1fs)",
+        report.vulnerability_found,
+        report.vulnerability_type,
         report.severity,
         elapsed,
     )
 
     return {
         "red_report": report.model_dump(),
-        "vulnerability_found": report.defect_found, # Map back for pipeline
-        "exploit_harness": report.test_harness_code,
-        "exploit_type": report.test_harness_type,
+        "vulnerability_found": report.vulnerability_found,
+        "exploit_harness": report.exploit_code_harness,
+        "exploit_type": report.exploit_type,
         "expected_stdout_regex": report.expected_stdout_regex,
         "pipeline_status": "RED_COMPLETE",
         "timestamps": {**state.get("timestamps", {}), "red_end": time.time()},

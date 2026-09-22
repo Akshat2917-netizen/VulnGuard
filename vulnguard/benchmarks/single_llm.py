@@ -83,7 +83,7 @@ def run_single_llm(
     Returns:
         SingleLLMBenchmark with result and cost metrics.
     """
-    from litellm import completion
+    from vulnguard.llm_runtime import completion
 
     model = f"{cfg.llm.provider}/{cfg.llm.model_name}"
     prompt = _PROMPT.format(language=language, code=code)

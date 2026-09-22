@@ -362,11 +362,6 @@ def _call_llm(messages: list[dict], risk_score: float = 100.0, retries: int = 3)
       - score >= 80 → high-tier model (e.g. Gemini 3.1 Pro, Opus 4.6)
       - score 65-79 → medium-tier model (e.g. Gemini Flash, Sonnet 4.6)
     """
-    from litellm import completion
-
-    provider, model_name = cfg.routing.get_model_for_score(risk_score)
-    model = f"{provider}/{model_name}"
-    
     if cfg.llm.mock_mode:
         logger.info("Mock LLM enabled. Returning synthetic Blue Agent response.")
         return """
@@ -378,6 +373,11 @@ def _call_llm(messages: list[dict], risk_score: float = 100.0, retries: int = 3)
           "justification": "Mock justification."
         }
         """
+
+    provider, model_name = cfg.routing.get_model_for_score(risk_score)
+    model = f"{provider}/{model_name}"
+    from vulnguard.llm_runtime import completion
+
     logger.info("Model routing: risk=%.1f → %s", risk_score, model)
 
     for attempt in range(retries):
@@ -445,6 +445,8 @@ def blue_agent_node(state: VulnGuardState) -> dict[str, Any]:
     except Exception:
         try:
             data = json.loads(clean_response)
+            if "patched_code" not in data and isinstance(data.get("properties"), dict):
+                data = data["properties"]
             patch = BlueAgentPatch(**data)
         except Exception as exc:
             logger.error("Failed to parse Blue Agent response: %s", exc)

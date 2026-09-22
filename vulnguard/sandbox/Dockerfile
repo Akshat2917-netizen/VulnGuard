@@ -21,15 +21,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN useradd -m -s /bin/sh sandbox
+RUN python3 -m pip install --no-cache-dir pytest
 
 # Working directory
 WORKDIR /workspace
 
-# Default to non-root
-USER sandbox
-
-# Entrypoint: execute the command passed as arguments
-ENTRYPOINT ["sh", "-c"]
-CMD ["echo 'VulnGuard Sandbox ready'"]
+CMD ["echo", "VulnGuard Sandbox ready"]

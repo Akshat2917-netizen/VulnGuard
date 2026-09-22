@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ShieldAlert, Wrench, Scale, Terminal } from 'lucide-react';
+import { ShieldAlert, Wrench, Scale, Terminal, Download, Network } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export default function AgentFeed({ events, selectedFunc }: { events: any[], selectedFunc: any }) {
@@ -9,6 +9,17 @@ export default function AgentFeed({ events, selectedFunc }: { events: any[], sel
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [events]);
+
+  const downloadPatch = (state: any) => {
+    const content = state.patch_diff || state.patched_code;
+    if (!content) return;
+    const url = URL.createObjectURL(new Blob([content], { type: 'text/plain' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${selectedFunc?.name || 'vulnguard-fix'}.patch`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   if (!selectedFunc) {
     return (
@@ -31,6 +42,12 @@ export default function AgentFeed({ events, selectedFunc }: { events: any[], sel
             animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
             className="flex flex-col gap-2"
           >
+            {ev.type === 'batch_function' && (
+              <div className="border-b border-white/10 pb-2 text-xs font-medium text-white/40">
+                {ev.relative_path} / {ev.function_name}
+              </div>
+            )}
+
             {ev.type === 'status' && (
               <div className="flex items-center gap-2 text-sm text-white/50 font-mono">
                 <span className="text-white/30">{'>'}</span> {ev.message}
@@ -51,6 +68,13 @@ export default function AgentFeed({ events, selectedFunc }: { events: any[], sel
                     HIGH RISK DETECTED
                   </div>
                 )}
+              </div>
+            )}
+
+            {ev.type === 'context_result' && (
+              <div className="flex items-center gap-3 text-sm text-white/60">
+                <Network className="h-4 w-4" />
+                <span>{ev.imports} imports, {ev.callees} callees, {ev.token_count} context tokens</span>
               </div>
             )}
 
@@ -84,10 +108,22 @@ export default function AgentFeed({ events, selectedFunc }: { events: any[], sel
                 <div className="flex items-center gap-3 mb-4">
                   <div className="p-2 bg-blue-500/20 text-blue-400 rounded-lg"><Wrench className="w-5 h-5"/></div>
                   <h3 className="font-semibold text-blue-200">Blue Agent Secure Patch</h3>
+                  <button
+                    type="button"
+                    onClick={() => downloadPatch(ev.state)}
+                    className="ml-auto p-2 text-blue-300 hover:text-white"
+                    title="Download patch"
+                    aria-label="Download patch"
+                  >
+                    <Download className="h-4 w-4" />
+                  </button>
                 </div>
                 <div className="bg-black/50 p-4 rounded-xl border border-white/5 overflow-x-auto">
-                  <code className="text-sm text-blue-300 whitespace-pre">{ev.state.patched_code}</code>
+                  <code className="text-sm text-blue-300 whitespace-pre">{ev.state.patch_diff || ev.state.patched_code}</code>
                 </div>
+                {ev.state.patch_justification && (
+                  <p className="mt-3 text-sm text-white/60">{ev.state.patch_justification}</p>
+                )}
               </div>
             )}
 
