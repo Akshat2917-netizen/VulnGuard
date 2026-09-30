@@ -198,8 +198,10 @@ def _validate(state: VulnGuardState) -> tuple[JudgeVerdict, str]:
     if not check_docker_available():
         return (
             JudgeVerdict.SANDBOX_UNAVAILABLE,
-            "Static syntax and patch guardrail checks passed. Install and start Docker "
-            "to run builds, tests, and exploit validation.",
+            "Static syntax and patch guardrail checks passed. Install and start Docker, "
+            "then build the sandbox image with `docker build -t vulnguard-sandbox:latest "
+            "-f vulnguard/sandbox/Dockerfile vulnguard/sandbox` to run builds, tests, "
+            "and exploit validation.",
         )
 
     repo_root = state.get("repo_root", "")

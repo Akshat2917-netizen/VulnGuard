@@ -27,7 +27,7 @@ for OpenAI.
 Build the isolated multi-language sandbox image:
 
 ```powershell
-docker build -t vulnguard-sandbox:latest -f vulnguard/sandbox/Dockerfile .
+docker build -t vulnguard-sandbox:latest -f vulnguard/sandbox/Dockerfile vulnguard/sandbox
 ```
 
 ## Run the dashboard

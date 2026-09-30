@@ -27,11 +27,12 @@ logger = logging.getLogger(__name__)
 
 
 class DockerNotAvailableError(RuntimeError):
-    """Raised when Docker daemon is not running or not installed."""
+    """Raised when the Docker sandbox is not ready."""
 
-    def __init__(self):
+    def __init__(self, message: str = ""):
         super().__init__(
-            "Docker is not available. Ensure Docker Desktop is running.\n"
+            message
+            or "Docker is not available. Ensure Docker Desktop is running.\n"
             "Install: https://docs.docker.com/get-docker/\n"
             "On Windows, Docker Desktop or WSL2 with Docker is required."
         )
@@ -101,8 +102,18 @@ def _get_client():
 
         client = docker.from_env()
         client.ping()  # Health check
+        try:
+            client.images.get(cfg.sandbox.sandbox_image)
+        except docker.errors.ImageNotFound as exc:
+            raise DockerNotAvailableError(
+                f"Docker image '{cfg.sandbox.sandbox_image}' is missing. Build it with:\n"
+                f"docker build -t {cfg.sandbox.sandbox_image} "
+                "-f vulnguard/sandbox/Dockerfile vulnguard/sandbox"
+            ) from exc
         _docker_client = client
         return client
+    except DockerNotAvailableError:
+        raise
     except Exception as exc:
         logger.error("Docker health check failed: %s", exc)
         raise DockerNotAvailableError() from exc
@@ -154,6 +165,7 @@ class DockerRunner:
         (input_root / "vulnguard_run.sh").write_text(
             f"set -eu\n{command}\n",
             encoding="utf-8",
+            newline="\n",
         )
         os.chmod(input_root, 0o755)
 

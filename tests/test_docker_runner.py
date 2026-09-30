@@ -7,6 +7,7 @@ requiring Docker to be installed.
 
 import platform
 import pytest
+import docker
 from unittest.mock import patch, MagicMock
 
 from vulnguard.sandbox.docker_runner import (
@@ -44,6 +45,20 @@ class TestDockerNotAvailable:
         err = DockerNotAvailableError()
         assert "Docker is not available" in str(err)
         assert "docs.docker.com" in str(err)
+
+    def test_missing_image_has_build_instructions(self):
+        import vulnguard.sandbox.docker_runner as docker_runner
+
+        client = MagicMock()
+        client.images.get.side_effect = docker.errors.ImageNotFound("missing")
+        docker_runner._docker_client = None
+
+        try:
+            with patch("docker.from_env", return_value=client):
+                with pytest.raises(DockerNotAvailableError, match="docker build"):
+                    docker_runner._get_client()
+        finally:
+            docker_runner._docker_client = None
 
 
 class TestCommandResult:
