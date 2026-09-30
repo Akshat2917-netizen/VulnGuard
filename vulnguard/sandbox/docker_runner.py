@@ -366,7 +366,7 @@ class DockerRunner:
         if (root / "CMakeLists.txt").exists():
             return "mkdir -p /tmp/build && cd /tmp/build && cmake /tmp/workspace && make -j$(nproc)"
         if (root / "setup.py").exists() or (root / "pyproject.toml").exists():
-            return "pip install -e /tmp/workspace 2>&1"
+            return "python3 -m pip install -e /tmp/workspace 2>&1"
         if (root / "package.json").exists():
             return "cd /tmp/workspace && npm ci && npm run build 2>&1"
         if (root / "pom.xml").exists():
@@ -380,13 +380,13 @@ class DockerRunner:
         if (root / "Makefile").exists():
             return "make test 2>&1"
         if (root / "setup.py").exists() or (root / "pyproject.toml").exists():
-            return "cd /tmp/workspace && python -m pytest -x 2>&1"
+            return "cd /tmp/workspace && python3 -m pytest -x 2>&1"
         if (root / "package.json").exists():
             return "cd /tmp/workspace && npm test 2>&1"
         if (root / "pom.xml").exists():
             return "cd /tmp/workspace && mvn test 2>&1"
         # Fallback to pytest for Python MVP
-        return "cd /tmp/workspace && python -m pytest -x 2>&1"
+        return "cd /tmp/workspace && python3 -m pytest -x 2>&1"
 
 
 @lru_cache(maxsize=1)

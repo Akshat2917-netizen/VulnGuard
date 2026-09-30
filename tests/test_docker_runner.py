@@ -109,7 +109,9 @@ class TestBuildCommandDetection:
 
 class TestSandboxCommands:
     def test_test_failures_are_not_masked(self, tmp_path):
-        assert "|| true" not in DockerRunner._detect_test_command(str(tmp_path))
+        command = DockerRunner._detect_test_command(str(tmp_path))
+        assert "|| true" not in command
+        assert "python3 -m pytest" in command
 
     def test_workspace_path_is_relative(self, tmp_path):
         target = tmp_path / "src" / "app.py"
@@ -151,7 +153,9 @@ def test_sandbox_executes_as_unprivileged_user():
         pytest.skip("Docker daemon is not available")
 
     runner = DockerRunner()
-    result = runner._run_container("test \"$(id -u)\" = 65534 && echo SANDBOX_OK")
+    result = runner._run_container(
+        'test "$(id -u)" = 65534 && python3 --version && echo SANDBOX_OK'
+    )
 
     assert result.success, result.combined_output
     assert "SANDBOX_OK" in result.stdout
