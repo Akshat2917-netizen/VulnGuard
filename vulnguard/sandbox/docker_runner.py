@@ -351,9 +351,18 @@ class DockerRunner:
                 else Path(file_path).name
             )
             destination = f"/tmp/workspace/{rel_path}"
-            run_cmd = (
-                f"cp -- {shlex.quote(container_file)} {shlex.quote(destination)} && {run_cmd}"
-            )
+            copy_target = f"cp -- {shlex.quote(container_file)} {shlex.quote(destination)}"
+            if language in {"c", "cpp"}:
+                compiler = "g++" if language == "cpp" else "gcc"
+                run_cmd = (
+                    f"{copy_target} && "
+                    f"{compiler} -Dmain=vulnguard_target_main -c {shlex.quote(destination)} "
+                    f"-o /tmp/vulnguard_target.o && "
+                    f"{compiler} {shlex.quote(exploit_file)} /tmp/vulnguard_target.o "
+                    "-o /tmp/exploit_bin && /tmp/exploit_bin"
+                )
+            else:
+                run_cmd = f"{copy_target} && {run_cmd}"
 
         return self._run_container(
             command=run_cmd,

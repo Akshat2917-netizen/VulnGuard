@@ -141,6 +141,22 @@ class TestSandboxCommands:
         assert "python3 /tmp/workspace/vulnguard_exploit.py" in kwargs["command"]
         assert "/tmp/workspace/target.py" in kwargs["command"]
 
+    def test_c_exploit_links_workspace_target(self):
+        runner = DockerRunner.__new__(DockerRunner)
+        runner._run_container = MagicMock(return_value=CommandResult(True, 0, "", ""))
+
+        runner.run_exploit(
+            repo_root="",
+            exploit_code="int main(void) { return target(); }",
+            target_code="int target(void) { return 0; }",
+            file_path="target.c",
+            language="c",
+        )
+
+        command = runner._run_container.call_args.kwargs["command"]
+        assert "-Dmain=vulnguard_target_main -c /tmp/workspace/target.c" in command
+        assert "/tmp/vulnguard_target.o" in command
+
     def test_files_are_mounted_read_only_before_container_starts(self):
         runner = DockerRunner.__new__(DockerRunner)
         runner._client = MagicMock()
@@ -196,3 +212,26 @@ def test_python_exploit_imports_single_file_target():
 
     assert result.success, result.combined_output
     assert "TARGET_IMPORTED" in result.stdout
+
+
+@pytest.mark.docker
+def test_c_exploit_links_target_with_existing_main():
+    if not check_docker_available():
+        pytest.skip("Docker daemon is not available")
+
+    target_code = (
+        "#include <stdio.h>\n"
+        "void target(void) { puts(\"TARGET_LINKED\"); }\n"
+        "int main(void) { return 0; }\n"
+    )
+    runner = DockerRunner()
+    result = runner.run_exploit(
+        repo_root="",
+        exploit_code="void target(void); int main(void) { target(); return 0; }\n",
+        target_code=target_code,
+        file_path="sample_target.c",
+        language="c",
+    )
+
+    assert result.success, result.combined_output
+    assert "TARGET_LINKED" in result.stdout

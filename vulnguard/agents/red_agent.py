@@ -73,6 +73,7 @@ RULES:
 4. The test MUST produce detectable stdout output (e.g. print "DEFECT_TRIGGERED") when the defect is triggered.
 5. Do NOT perform any destructive system operations in the test case.
 6. The test MUST execute the target from the supplied workspace. Do not copy the target function into the test, because the Judge must run the same test against both the original and patched source.
+7. The success marker MUST NOT appear inside attacker-controlled input or data printed by the target. For command injection, use a benign isolated side effect (for example, create a file under /tmp), verify that side effect, and only then print the success marker.
 
 You must output valid JSON data containing your analysis. Do NOT output the schema itself. Your JSON output MUST conform to the following schema:
 {schema}
@@ -82,6 +83,7 @@ _USER_PROMPT = """\
 ## Target Function
 File: {file_path}
 Language: {language}
+Workspace target: {workspace_target}
 
 ```{language}
 {code}
@@ -118,6 +120,7 @@ def _build_prompt(state: VulnGuardState) -> list[dict[str, str]]:
                 risk_score=state["risk_score"],
                 file_path=state.get("file_path", "unknown"),
                 language=state["language"],
+                workspace_target=_workspace_target_instruction(state),
                 code=state["original_code"],
                 context=context_text,
             ),
@@ -209,6 +212,53 @@ def _validate_exploit_language(report: RedAgentReport, target_language: str) -> 
     return bool(re.search(pattern, report.exploit_code_harness))
 
 
+def _python_target_import(state: VulnGuardState) -> tuple[str, str]:
+    """Return the importable module and symbol that owns the target function."""
+    file_path = state.get("file_path", "")
+    target_name = state.get("function_id", "").rsplit(":", 1)[-1]
+    module_name = Path(file_path).stem if file_path else "target_module"
+    repo_root = state.get("repo_root", "")
+    if file_path and repo_root:
+        try:
+            relative = Path(file_path).resolve().relative_to(Path(repo_root).resolve())
+            module_name = ".".join(relative.with_suffix("").parts)
+            if module_name.endswith(".__init__"):
+                module_name = module_name.removesuffix(".__init__")
+        except ValueError:
+            pass
+
+    owner = target_name
+    try:
+        source = Path(file_path).read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source)
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and any(
+                isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and child.name == target_name
+                for child in node.body
+            ):
+                owner = node.name
+                break
+    except (OSError, SyntaxError):
+        pass
+
+    return module_name, owner
+
+
+def _workspace_target_instruction(state: VulnGuardState) -> str:
+    if state.get("language") != "python":
+        return "Compile/link the harness with the supplied workspace source file."
+
+    module_name, owner = _python_target_import(state)
+    target_name = state.get("function_id", "").rsplit(":", 1)[-1]
+    if owner == target_name:
+        return f"Use `from {module_name} import {target_name}` and invoke `{target_name}`."
+    return (
+        f"Use `from {module_name} import {owner}`, instantiate `{owner}`, "
+        f"and invoke its `{target_name}` method."
+    )
+
+
 def _exploit_validation_error(report: RedAgentReport, state: VulnGuardState) -> str | None:
     """Reject Python PoCs that do not exercise the uploaded target module."""
     harness = report.exploit_code_harness
@@ -227,36 +277,31 @@ def _exploit_validation_error(report: RedAgentReport, state: VulnGuardState) -> 
     ):
         return f"the harness redefines target '{target_name}' instead of importing it"
 
-    file_path = state.get("file_path", "")
-    module_names = {Path(file_path).stem} if file_path else set()
-    repo_root = state.get("repo_root", "")
-    if file_path and repo_root:
-        try:
-            relative = Path(file_path).resolve().relative_to(Path(repo_root).resolve())
-            module_names.add(".".join(relative.with_suffix("").parts))
-        except ValueError:
-            pass
-
-    imported_modules = {
-        node.module
+    module_name, owner = _python_target_import(state)
+    imports_target = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == module_name
+        and any(alias.name in {owner, "*"} for alias in node.names)
         for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module
-    }
-    imported_modules.update(
-        alias.name
+    ) or any(
+        isinstance(node, ast.Import)
+        and any(alias.name == module_name for alias in node.names)
         for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
     )
-    if module_names and not any(
-        imported == module or imported.endswith(f".{module}")
-        for imported in imported_modules
-        for module in module_names
-    ):
-        return "the harness does not import the uploaded target module"
+    if not imports_target:
+        return f"the harness must import '{owner}' from workspace module '{module_name}'"
 
     expected = report.expected_stdout_regex
     if expected:
+        if re.fullmatch(r"[A-Za-z0-9_ -]+", expected):
+            embedded_marker = any(
+                expected in node.value and node.value.strip() != expected
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            )
+            if embedded_marker:
+                return "the success marker is embedded in exploit input, causing false positives"
+
         for handler in (node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)):
             catches_any = handler.type is None or (
                 isinstance(handler.type, ast.Name)

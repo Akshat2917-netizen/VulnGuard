@@ -17,7 +17,7 @@ from vulnguard.agents.red_agent import (
     _validate_exploit_language,
     _sanitize_exploit,
 )
-from vulnguard.agents.blue_agent import _check_ast_loc_delta
+from vulnguard.agents.blue_agent import _check_ast_loc_delta, _insecure_patch_reason
 from vulnguard.agents.judge_agent import (
     JudgeVerdict,
     _run_tests,
@@ -133,7 +133,15 @@ class TestExploitLanguageValidation:
 
         assert "redefines target" in _exploit_validation_error(report, state)
 
-    def test_accepts_harness_that_imports_python_target(self):
+    def test_accepts_harness_that_imports_python_target(self, tmp_path):
+        package = tmp_path / "vuln_taint_flow"
+        package.mkdir()
+        target = package / "database.py"
+        target.write_text(
+            "class Database:\n"
+            "    def update_user_status(self, value):\n"
+            "        pass\n"
+        )
         report = RedAgentReport(
             vulnerability_found=True,
             exploit_code_harness=(
@@ -142,9 +150,24 @@ class TestExploitLanguageValidation:
             ),
         )
         state = initial_state("vuln_taint_flow/database.py:update_user_status", "pass", "python", 90.0, {})
-        state["file_path"] = "vuln_taint_flow/database.py"
+        state["file_path"] = str(target)
+        state["repo_root"] = str(tmp_path)
 
         assert _exploit_validation_error(report, state) is None
+
+    def test_rejects_marker_embedded_in_exploit_input(self):
+        report = RedAgentReport(
+            vulnerability_found=True,
+            exploit_code_harness=(
+                "from vuln_cmdi import ping_host\n"
+                "ping_host('localhost; echo DEFECT_TRIGGERED')"
+            ),
+            expected_stdout_regex="DEFECT_TRIGGERED",
+        )
+        state = initial_state("vuln_cmdi.py:ping_host", "pass", "python", 90.0, {})
+        state["file_path"] = "vuln_cmdi.py"
+
+        assert "embedded in exploit input" in _exploit_validation_error(report, state)
 
     def test_rejects_generic_exception_as_exploit_success(self):
         report = RedAgentReport(
@@ -210,6 +233,14 @@ class TestAntiTrivialityCheck:
     def test_handles_empty_original(self):
         ok, _ = _check_ast_loc_delta("", "int f() { return 1; }", min_ratio=0.4)
         assert ok is True
+
+    def test_rejects_command_injection_patch_that_keeps_os_system(self):
+        state = initial_state("vuln_cmdi.py:ping_host", "pass", "python", 90.0, {})
+        state["red_report"] = {"vulnerability_type": "COMMAND_INJECTION"}
+
+        reason = _insecure_patch_reason(state, "os.system(' '.join(command))")
+
+        assert "still invokes a shell" in reason
 
 
 class TestErrorLogTruncation:

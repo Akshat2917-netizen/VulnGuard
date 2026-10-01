@@ -73,6 +73,7 @@ STRICT RULES:
    provide explicit justification explaining why the removed code was entirely part of the vulnerability.
 5. Apply the MINIMUM change necessary to fix the vulnerability.
 6. Your patch must compile/run without errors in the existing project context.
+7. For command injection, do not use os.system, shell=True, or join arguments back into a command string. Use an existing shell-free API with an argument list.
 
 Available imports/packages (do NOT use anything not listed here):
 {available_imports}
@@ -414,6 +415,16 @@ def _call_llm(messages: list[dict], risk_score: float = 100.0, retries: int = 3)
 
 # ── LangGraph node function ──────────────────────────────────────────────
 
+def _insecure_patch_reason(state: VulnGuardState, patched_code: str) -> str | None:
+    vuln_type = (state.get("red_report") or {}).get("vulnerability_type", "")
+    if vuln_type == "COMMAND_INJECTION" and (
+        re.search(r"\bos\.system\s*\(", patched_code)
+        or re.search(r"\bshell\s*=\s*True\b", patched_code)
+    ):
+        return "Command injection patch still invokes a shell; use a shell-free argument-list API"
+    return None
+
+
 def blue_agent_node(state: VulnGuardState) -> dict[str, Any]:
     """LangGraph node: Generate a secure patch.
 
@@ -476,6 +487,17 @@ def blue_agent_node(state: VulnGuardState) -> dict[str, Any]:
             "pipeline_status": "BLUE_NEW_DEPS",
             "judge_verdict": "NEW_DEPENDENCIES_REJECTED",
             "error_logs": "Blue Agent attempted to add unapproved dependencies",
+            "timestamps": {**state.get("timestamps", {}), "blue_end": time.time()},
+        }
+
+    insecure_reason = _insecure_patch_reason(state, patch.patched_code)
+    if insecure_reason:
+        logger.warning("Insecure patch rejected: %s", insecure_reason)
+        return {
+            "patched_code": patch.patched_code,
+            "pipeline_status": "BLUE_INSECURE_PATCH",
+            "judge_verdict": "NEW_VULNERABILITY_INTRODUCED",
+            "error_logs": insecure_reason,
             "timestamps": {**state.get("timestamps", {}), "blue_end": time.time()},
         }
 

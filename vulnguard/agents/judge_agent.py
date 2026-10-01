@@ -278,6 +278,7 @@ def judge_agent_node(state: VulnGuardState) -> dict[str, Any]:
     if pre_verdict in (
         JudgeVerdict.DESTRUCTIVE_PATCH_REJECTED,
         JudgeVerdict.INTERFACE_VIOLATION,
+        JudgeVerdict.NEW_VULNERABILITY_INTRODUCED,
         "NEW_DEPENDENCIES_REJECTED",
     ):
         logger.info("⚖️  Pre-rejected by Blue Agent guardrails: %s", pre_verdict)
