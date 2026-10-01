@@ -63,10 +63,10 @@ class LLMConfig:
     """LLM provider settings (legacy single-model config)."""
 
     provider: str = _env("VULNGUARD_LLM_PROVIDER", "gemini")
-    model_name: str = _env("VULNGUARD_LLM_MODEL", "gemini-3.1-pro")
+    model_name: str = _env("VULNGUARD_LLM_MODEL", "gemini-3.8-flash")
     temperature: float = 0.0  # Deterministic — EC-7.5
     max_tokens: int = _env_int("VULNGUARD_LLM_MAX_TOKENS", 4096)
-    api_key: str = _env("OPENAI_API_KEY") or _env("ANTHROPIC_API_KEY") or _env("GEMINI_API_KEY", "")
+    api_key: str = _env("GEMINI_API_KEY", "")
     # Retry / backoff — EC-7.4
     max_retries: int = 3
     retry_base_delay_seconds: float = 2.0
@@ -81,10 +81,10 @@ class ModelRoutingConfig:
     high_risk_threshold: int = _env_int("VULNGUARD_HIGH_RISK_THRESHOLD", 80)
     # High-risk tier (score >= threshold) — complex multi-file vulns
     high_risk_provider: str = _env("VULNGUARD_HIGH_RISK_PROVIDER", "gemini")
-    high_risk_model: str = _env("VULNGUARD_HIGH_RISK_MODEL", "gemini-3.1-pro")
+    high_risk_model: str = _env("VULNGUARD_HIGH_RISK_MODEL", "gemini-3.1-pro-preview")
     # Medium-risk tier (score 65-79) — single-file, textbook vulns
     medium_risk_provider: str = _env("VULNGUARD_MEDIUM_RISK_PROVIDER", "gemini")
-    medium_risk_model: str = _env("VULNGUARD_MEDIUM_RISK_MODEL", "gemini-3.6-flash")
+    medium_risk_model: str = _env("VULNGUARD_MEDIUM_RISK_MODEL", "gemini-3.8-flash")
 
     def get_model_for_score(self, risk_score: float) -> tuple[str, str]:
         """Return (provider, model_name) for the given risk score."""

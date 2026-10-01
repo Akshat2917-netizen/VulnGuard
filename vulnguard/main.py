@@ -11,6 +11,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -351,6 +352,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_dash.add_argument("--backend", choices=["fastapi", "streamlit"], default="streamlit")
     p_dash.add_argument("--port", type=int, default=8000, help="FastAPI port")
     p_dash.set_defaults(func=cmd_dashboard)
+
+    # usage
+    def cmd_usage(args):
+        from vulnguard.llm_runtime import usage_summary
+
+        rows = usage_summary()
+        if args.json:
+            print(json.dumps(rows, indent=2))
+            return
+        if not rows:
+            print("No LLM usage recorded yet.")
+            return
+        print(
+            f"{'Provider':<12} {'Model':<32} {'Calls':>6} {'Input':>10} "
+            f"{'Output':>10} {'Cost USD':>12} {'Avg ms':>10}"
+        )
+        for row in rows:
+            print(
+                f"{row['provider']:<12} {row['model']:<32} {row['calls']:>6} "
+                f"{row['input_tokens']:>10} {row['output_tokens']:>10} "
+                f"{row['estimated_cost_usd']:>12.6f} {row['avg_latency_ms']:>10.1f}"
+            )
+
+    p_usage = sub.add_parser("usage", help="Summarize recorded LLM token usage and cost")
+    p_usage.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    p_usage.set_defaults(func=cmd_usage)
 
     # worker
     def cmd_worker(args):

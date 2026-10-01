@@ -2,6 +2,7 @@
 data/cache/
 data/uploads/
 data/vulnguard.db*
+data/llm_usage.jsonl
 data/benchmarks*/
 *.parquet
 **/__pycache__/

@@ -21,8 +21,8 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Set the API key and model-routing values in `.env`. The example is configured
-for OpenAI.
+Set `GEMINI_API_KEY` in `.env`. VulnGuard routes high-risk work to
+`gemini-3.1-pro-preview` and medium-risk work to `gemini-3.8-flash`.
 
 Build the isolated multi-language sandbox image:
 
@@ -80,6 +80,16 @@ python -m vulnguard.main benchmark . --max-files 100 --output-dir data/benchmark
 
 The command writes JSON and Markdown comparisons for VulnGuard triage and any
 installed SAST tools. Precision and recall are reported only for labeled data.
+
+## Compare LLM usage
+
+VulnGuard records provider, model, token counts, and LiteLLM's estimated cost in
+`data/llm_usage.jsonl`. Prompts, source code, responses, and API keys are not logged.
+
+```powershell
+python -m vulnguard.main usage
+python -m vulnguard.main usage --json
+```
 
 ## Test
 
