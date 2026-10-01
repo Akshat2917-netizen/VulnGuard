@@ -23,6 +23,7 @@ def test_litellm_environment_uses_normalized_local_tokenizers(monkeypatch, tmp_p
 def test_usage_log_records_and_aggregates_metadata(tmp_path, monkeypatch):
     usage_log = tmp_path / "usage.jsonl"
     monkeypatch.setattr(llm_runtime, "_USAGE_LOG", usage_log)
+    monkeypatch.setattr(llm_runtime, "_estimate_standard_token_cost", lambda *_: None)
     response = SimpleNamespace(
         usage=SimpleNamespace(prompt_tokens=120, completion_tokens=30, total_tokens=150),
         _hidden_params={"response_cost": 0.00125},
@@ -44,3 +45,23 @@ def test_usage_log_records_and_aggregates_metadata(tmp_path, monkeypatch):
         }
     ]
     assert "prompt" not in usage_log.read_text()
+
+
+def test_usage_includes_reasoning_tokens_in_output_and_cost(tmp_path, monkeypatch):
+    usage_log = tmp_path / "usage.jsonl"
+    monkeypatch.setattr(llm_runtime, "_USAGE_LOG", usage_log)
+    monkeypatch.setattr(
+        llm_runtime,
+        "_estimate_standard_token_cost",
+        lambda _model, input_tokens, output_tokens: input_tokens * 0.001 + output_tokens * 0.002,
+    )
+    response = SimpleNamespace(
+        usage=SimpleNamespace(prompt_tokens=100, completion_tokens=0, total_tokens=150),
+        _hidden_params={"response_cost": 0.001},
+    )
+
+    llm_runtime._record_usage(response, "gemini/gemini-3.8-flash")
+    summary = llm_runtime.usage_summary()
+
+    assert summary[0]["output_tokens"] == 50
+    assert summary[0]["estimated_cost_usd"] == 0.2

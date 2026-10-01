@@ -68,14 +68,46 @@ def _usage_value(usage: Any, key: str) -> int:
     return int(getattr(usage, key, 0) or 0)
 
 
+def _estimate_standard_token_cost(
+    requested_model: str,
+    input_tokens: int,
+    output_tokens: int,
+) -> float | None:
+    """Estimate standard token cost from LiteLLM's local model-price map."""
+    try:
+        _prepare_litellm_environment()
+        from litellm import model_cost
+
+        model_name = requested_model.partition("/")[2] or requested_model
+        prices = model_cost.get(requested_model) or model_cost.get(model_name) or {}
+        input_rate = prices.get("input_cost_per_token")
+        output_rate = prices.get("output_cost_per_token")
+        if input_rate is None or output_rate is None:
+            return None
+        if input_tokens > 200_000:
+            input_rate = prices.get("input_cost_per_token_above_200k_tokens", input_rate)
+            output_rate = prices.get("output_cost_per_token_above_200k_tokens", output_rate)
+        return input_tokens * float(input_rate) + output_tokens * float(output_rate)
+    except Exception:
+        return None
+
+
 def _record_usage(response: Any, requested_model: str, latency_ms: float = 0.0) -> None:
     """Append token and cost metadata without storing prompts or responses."""
     usage = getattr(response, "usage", None)
     if usage is None:
         return
 
-    hidden = getattr(response, "_hidden_params", {}) or {}
-    cost = hidden.get("response_cost")
+    input_tokens = _usage_value(usage, "prompt_tokens")
+    raw_output_tokens = _usage_value(usage, "completion_tokens")
+    total_tokens = _usage_value(usage, "total_tokens")
+    output_tokens = max(raw_output_tokens, total_tokens - input_tokens)
+    reasoning_tokens = max(output_tokens - raw_output_tokens, 0)
+
+    cost = _estimate_standard_token_cost(requested_model, input_tokens, output_tokens)
+    if cost is None:
+        hidden = getattr(response, "_hidden_params", {}) or {}
+        cost = hidden.get("response_cost")
     if cost is None:
         try:
             from litellm import completion_cost
@@ -89,9 +121,10 @@ def _record_usage(response: Any, requested_model: str, latency_ms: float = 0.0) 
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "provider": provider if model_name else "unknown",
         "model": model_name or provider,
-        "input_tokens": _usage_value(usage, "prompt_tokens"),
-        "output_tokens": _usage_value(usage, "completion_tokens"),
-        "total_tokens": _usage_value(usage, "total_tokens"),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "total_tokens": total_tokens,
         "estimated_cost_usd": float(cost) if cost is not None else None,
         "latency_ms": round(latency_ms, 3),
     }
@@ -126,9 +159,20 @@ def usage_summary() -> list[dict[str, Any]]:
             },
         )
         total["calls"] += 1
-        for field in ("input_tokens", "output_tokens", "total_tokens"):
-            total[field] += int(record.get(field, 0) or 0)
-        total["estimated_cost_usd"] += float(record.get("estimated_cost_usd") or 0.0)
+        input_tokens = int(record.get("input_tokens", 0) or 0)
+        recorded_output = int(record.get("output_tokens", 0) or 0)
+        total_tokens = int(record.get("total_tokens", 0) or 0)
+        output_tokens = max(recorded_output, total_tokens - input_tokens)
+        total["input_tokens"] += input_tokens
+        total["output_tokens"] += output_tokens
+        total["total_tokens"] += total_tokens
+        model_id = f"{key[0]}/{key[1]}"
+        estimated_cost = _estimate_standard_token_cost(model_id, input_tokens, output_tokens)
+        total["estimated_cost_usd"] += float(
+            estimated_cost
+            if estimated_cost is not None
+            else record.get("estimated_cost_usd") or 0.0
+        )
         total["latency_ms"] += float(record.get("latency_ms") or 0.0)
 
     rows = sorted(totals.values(), key=lambda item: (item["provider"], item["model"]))
