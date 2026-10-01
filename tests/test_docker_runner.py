@@ -155,6 +155,7 @@ class TestSandboxCommands:
 
         command = runner._run_container.call_args.kwargs["command"]
         assert "-Dmain=vulnguard_target_main -c /tmp/workspace/target.c" in command
+        assert "-fsanitize=address" in command
         assert "/tmp/vulnguard_target.o" in command
 
     def test_files_are_mounted_read_only_before_container_starts(self):
@@ -235,3 +236,33 @@ def test_c_exploit_links_target_with_existing_main():
 
     assert result.success, result.combined_output
     assert "TARGET_LINKED" in result.stdout
+
+
+@pytest.mark.docker
+def test_c_buffer_overflow_is_detected_at_runtime():
+    if not check_docker_available():
+        pytest.skip("Docker daemon is not available")
+
+    target_code = (
+        "#include <string.h>\n"
+        "void process_data(char *input) { char buffer[8]; strcpy(buffer, input); }\n"
+        "int main(void) { return 0; }\n"
+    )
+    harness = (
+        "#include <string.h>\n"
+        "void process_data(char *input);\n"
+        "int main(void) { char input[64]; memset(input, 'A', 63); "
+        "input[63] = '\\0'; process_data(input); return 0; }\n"
+    )
+    runner = DockerRunner()
+    result = runner.run_exploit(
+        repo_root="",
+        exploit_code=harness,
+        target_code=target_code,
+        file_path="vulnerable.c",
+        language="c",
+    )
+
+    assert not result.success
+    assert "VULNGUARD_EXECUTION_STARTED" in result.stdout
+    assert "buffer-overflow" in result.stderr.lower()

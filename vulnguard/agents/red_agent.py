@@ -400,6 +400,7 @@ def red_agent_node(state: VulnGuardState) -> dict[str, Any]:
 
     if validation_error:
         logger.warning("Invalid exploit harness (%s) — re-prompting once", validation_error)
+        messages.append({"role": "assistant", "content": raw_response})
         messages.append({
             "role": "user",
             "content": f"Your exploit harness is invalid because {validation_error}. "

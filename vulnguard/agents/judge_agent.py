@@ -42,6 +42,37 @@ _ERROR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_MEMORY_CRASH_PATTERN = re.compile(
+    r"stack smashing detected|segmentation fault|addresssanitizer|"
+    r"heap-buffer-overflow|stack-buffer-overflow|aborted \(core dumped\)",
+    re.IGNORECASE,
+)
+
+
+def _exploit_succeeded(
+    success_code: bool,
+    logs: str,
+    expected_regex: str | None,
+    vulnerability_type: str,
+) -> bool:
+    """Return whether a started harness demonstrated the reported defect."""
+    if "VULNGUARD_EXECUTION_STARTED" not in logs:
+        return False
+
+    memory_defect = any(
+        marker in vulnerability_type.upper()
+        for marker in ("BUFFER", "MEMORY", "USE_AFTER_FREE", "OUT_OF_BOUNDS")
+    )
+    if memory_defect and _MEMORY_CRASH_PATTERN.search(logs):
+        return True
+
+    if expected_regex:
+        try:
+            return bool(re.search(expected_regex, logs))
+        except re.error:
+            return False
+    return success_code
+
 
 def _truncate_error_logs(logs: str, max_chars: int = 2000) -> str:
     """Filter error logs to relevant lines, capped at max_chars."""
@@ -236,31 +267,25 @@ def _validate(state: VulnGuardState) -> tuple[JudgeVerdict, str]:
     if state.get("exploit_harness"):
         expected_regex = state.get("expected_stdout_regex")
 
-        def exploit_succeeded(success_code: bool, logs: str) -> bool:
-            """Determine if the exploit successfully triggered the vulnerability."""
-            if "VULNGUARD_EXECUTION_STARTED" not in logs:
-                return False
-            if expected_regex:
-                try:
-                    return bool(re.search(expected_regex, logs))
-                except Exception:
-                    pass
-            # Fallback: assume exit code 0 means the exploit script successfully ran its payload
-            return success_code
+        vulnerability_type = (state.get("red_report") or {}).get("vulnerability_type", "")
 
         unpatched_ok, unpatched_logs = _run_exploit(state, use_patched=False)
-        if not exploit_succeeded(unpatched_ok, unpatched_logs):
+        if not _exploit_succeeded(
+            unpatched_ok, unpatched_logs, expected_regex, vulnerability_type
+        ):
             return JudgeVerdict.EXPLOIT_NOT_REPRODUCED, _truncate_error_logs(unpatched_logs)
 
         # ── Step 3b: Exploit on patched (should NOT trigger) ────
         patched_ok, patched_logs = _run_exploit(state, use_patched=True)
-        if exploit_succeeded(patched_ok, patched_logs):
+        if _exploit_succeeded(patched_ok, patched_logs, expected_regex, vulnerability_type):
             return JudgeVerdict.EXPLOIT_NOT_BLOCKED, _truncate_error_logs(patched_logs)
 
         # ── Step 4: Deterministic double-run (Section 4.6) ──
         if cfg.agent.double_run_validation:
             patched_ok2, patched_logs2 = _run_exploit(state, use_patched=True)
-            if exploit_succeeded(patched_ok2, patched_logs2):
+            if _exploit_succeeded(
+                patched_ok2, patched_logs2, expected_regex, vulnerability_type
+            ):
                 return JudgeVerdict.EXPLOIT_NOT_BLOCKED, "Flaky result — blocked first run, succeeded second"
 
     return JudgeVerdict.PASS, ""

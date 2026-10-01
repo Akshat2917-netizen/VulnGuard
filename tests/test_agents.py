@@ -24,6 +24,7 @@ from vulnguard.agents.blue_agent import (
 )
 from vulnguard.agents.judge_agent import (
     JudgeVerdict,
+    _exploit_succeeded,
     _run_tests,
     _truncate_error_logs,
     _validate,
@@ -195,6 +196,43 @@ class TestExploitLanguageValidation:
 
         assert "does not match target language" in _exploit_validation_error(report, state)
 
+    def test_invalid_harness_is_included_in_corrective_prompt(self):
+        invalid = json.dumps(
+            {
+                "vulnerability_found": True,
+                "vulnerability_type": "COMMAND_INJECTION",
+                "exploit_code_harness": (
+                    "from vuln_cmdi import ping_host\n"
+                    "ping_host('localhost; echo DEFECT_TRIGGERED')"
+                ),
+                "expected_stdout_regex": "DEFECT_TRIGGERED",
+            }
+        )
+        corrected = json.dumps(
+            {
+                "vulnerability_found": True,
+                "vulnerability_type": "COMMAND_INJECTION",
+                "exploit_code_harness": (
+                    "import os\nfrom vuln_cmdi import ping_host\n"
+                    "ping_host('localhost; touch /tmp/vg_probe')\n"
+                    "if os.path.exists('/tmp/vg_probe'):\n    print('DEFECT_TRIGGERED')"
+                ),
+                "expected_stdout_regex": "DEFECT_TRIGGERED",
+            }
+        )
+        state = initial_state("vuln_cmdi.py:ping_host", "pass", "python", 90.0, {})
+        state["file_path"] = "vuln_cmdi.py"
+
+        with patch(
+            "vulnguard.agents.red_agent._call_llm",
+            side_effect=[invalid, corrected],
+        ) as call_llm:
+            result = red_agent_node(state)
+
+        retry_messages = call_llm.call_args_list[1].args[0]
+        assert {"role": "assistant", "content": invalid} in retry_messages
+        assert "touch /tmp/vg_probe" in result["exploit_harness"]
+
     def test_rejects_generic_exception_as_exploit_success(self):
         report = RedAgentReport(
             vulnerability_found=True,
@@ -313,6 +351,14 @@ class TestJudgeVerdict:
 
     def test_pass_is_pass(self):
         assert JudgeVerdict.PASS.value == "PASS"
+
+    def test_memory_crash_reproduces_exploit_after_execution_started(self):
+        logs = "VULNGUARD_EXECUTION_STARTED\n*** stack smashing detected ***: terminated"
+        assert _exploit_succeeded(False, logs, "DEFECT_TRIGGERED", "BUFFER_OVERFLOW")
+
+    def test_compiler_error_does_not_reproduce_exploit(self):
+        logs = "undefined reference; source contains DEFECT_TRIGGERED"
+        assert not _exploit_succeeded(False, logs, "DEFECT_TRIGGERED", "BUFFER_OVERFLOW")
 
     def test_no_collected_tests_are_skipped(self):
         state = initial_state("fn", "def fn():\n    return 1", "python", 90.0, {})
