@@ -195,6 +195,17 @@ def _validate(state: VulnGuardState) -> tuple[JudgeVerdict, str]:
     if not syntax_ok:
         return JudgeVerdict.BUILD_FAILED, syntax_error
 
+    if state.get("exploit_harness"):
+        from vulnguard.agents.red_agent import RedAgentReport, _exploit_validation_error
+
+        try:
+            report = RedAgentReport.model_validate(state.get("red_report") or {})
+        except Exception as exc:
+            return JudgeVerdict.EXPLOIT_NOT_REPRODUCED, f"Invalid exploit report: {exc}"
+        harness_error = _exploit_validation_error(report, state)
+        if harness_error:
+            return JudgeVerdict.EXPLOIT_NOT_REPRODUCED, f"Invalid exploit harness: {harness_error}"
+
     from vulnguard.sandbox.docker_runner import check_docker_available
 
     if not check_docker_available():
@@ -223,18 +234,12 @@ def _validate(state: VulnGuardState) -> tuple[JudgeVerdict, str]:
 
     # ── Step 3a: Exploit on unpatched (should demonstrate vulnerability) ──
     if state.get("exploit_harness"):
-        from vulnguard.agents.red_agent import RedAgentReport, _exploit_validation_error
-
-        harness_error = _exploit_validation_error(
-            RedAgentReport.model_validate(state.get("red_report") or {}), state
-        )
-        if harness_error:
-            return JudgeVerdict.EXPLOIT_NOT_REPRODUCED, f"Invalid exploit harness: {harness_error}"
-
         expected_regex = state.get("expected_stdout_regex")
 
         def exploit_succeeded(success_code: bool, logs: str) -> bool:
             """Determine if the exploit successfully triggered the vulnerability."""
+            if "VULNGUARD_EXECUTION_STARTED" not in logs:
+                return False
             if expected_regex:
                 try:
                     return bool(re.search(expected_regex, logs))
@@ -297,7 +302,7 @@ def judge_agent_node(state: VulnGuardState) -> dict[str, Any]:
         "error_logs": error_logs,
         "build_success": not sandbox_unavailable and verdict != JudgeVerdict.BUILD_FAILED,
         "test_success": not sandbox_unavailable and verdict != JudgeVerdict.TESTS_FAILED,
-        "exploit_blocked": not sandbox_unavailable and verdict != JudgeVerdict.EXPLOIT_NOT_BLOCKED,
+        "exploit_blocked": verdict == JudgeVerdict.PASS,
         "timestamps": {**state.get("timestamps", {}), "judge_end": time.time()},
     }
 

@@ -17,7 +17,11 @@ from vulnguard.agents.red_agent import (
     _validate_exploit_language,
     _sanitize_exploit,
 )
-from vulnguard.agents.blue_agent import _check_ast_loc_delta, _insecure_patch_reason
+from vulnguard.agents.blue_agent import (
+    _check_ast_loc_delta,
+    _insecure_patch_reason,
+    blue_agent_node,
+)
 from vulnguard.agents.judge_agent import (
     JudgeVerdict,
     _run_tests,
@@ -127,6 +131,7 @@ class TestExploitLanguageValidation:
         report = RedAgentReport(
             vulnerability_found=True,
             exploit_code_harness="def update_user_status(value):\n    print(value)",
+            expected_stdout_regex="DEFECT_TRIGGERED",
         )
         state = initial_state("database.py:update_user_status", "pass", "python", 90.0, {})
         state["file_path"] = "database.py"
@@ -148,6 +153,7 @@ class TestExploitLanguageValidation:
                 "from vuln_taint_flow.database import Database\n"
                 "print(Database)"
             ),
+            expected_stdout_regex="DEFECT_TRIGGERED",
         )
         state = initial_state("vuln_taint_flow/database.py:update_user_status", "pass", "python", 90.0, {})
         state["file_path"] = str(target)
@@ -168,6 +174,26 @@ class TestExploitLanguageValidation:
         state["file_path"] = "vuln_cmdi.py"
 
         assert "embedded in exploit input" in _exploit_validation_error(report, state)
+
+    def test_rejects_harness_without_success_regex(self):
+        report = RedAgentReport(
+            vulnerability_found=True,
+            exploit_code_harness="from vuln_sqli import get_user",
+        )
+        state = initial_state("vuln_sqli.py:get_user", "pass", "python", 90.0, {})
+        state["file_path"] = "vuln_sqli.py"
+
+        assert "no expected_stdout_regex" in _exploit_validation_error(report, state)
+
+    def test_rejects_python_harness_for_c_target(self):
+        report = RedAgentReport(
+            vulnerability_found=True,
+            exploit_code_harness="import subprocess\nprint('DEFECT_TRIGGERED')",
+            expected_stdout_regex="DEFECT_TRIGGERED",
+        )
+        state = initial_state("vuln_buffer.c:process_data", "pass", "c", 90.0, {})
+
+        assert "does not match target language" in _exploit_validation_error(report, state)
 
     def test_rejects_generic_exception_as_exploit_success(self):
         report = RedAgentReport(
@@ -241,6 +267,27 @@ class TestAntiTrivialityCheck:
         reason = _insecure_patch_reason(state, "os.system(' '.join(command))")
 
         assert "still invokes a shell" in reason
+
+    def test_successful_retry_clears_previous_judge_error(self):
+        state = initial_state("vuln_cmdi.py:ping_host", "def ping_host(host):\n    return 0", "python", 90.0, {})
+        state["red_report"] = {"vulnerability_type": "COMMAND_INJECTION"}
+        state["judge_verdict"] = "NEW_VULNERABILITY_INTRODUCED"
+        state["error_logs"] = "old failure"
+        response = json.dumps(
+            {
+                "patched_code": "def ping_host(host):\n    return os.spawnvp(os.P_WAIT, 'ping', ['ping', host])",
+                "changes_summary": "Use shell-free execution",
+                "preserved_interface": True,
+                "new_dependencies_added": False,
+                "justification": "Arguments are not interpreted by a shell",
+            }
+        )
+
+        with patch("vulnguard.agents.blue_agent._call_llm", return_value=response):
+            result = blue_agent_node(state)
+
+        assert result["judge_verdict"] == ""
+        assert result["error_logs"] == ""
 
 
 class TestErrorLogTruncation:

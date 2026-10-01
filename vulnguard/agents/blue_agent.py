@@ -527,6 +527,8 @@ def blue_agent_node(state: VulnGuardState) -> dict[str, Any]:
         "patched_code": patch.patched_code,
         "patch_justification": patch.justification,
         "patch_diff": diff,
+        "judge_verdict": "",
+        "error_logs": "",
         "pipeline_status": "BLUE_COMPLETE",
         "timestamps": {**state.get("timestamps", {}), "blue_end": time.time()},
     }

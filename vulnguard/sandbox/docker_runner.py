@@ -333,11 +333,11 @@ class DockerRunner:
 
         # Build execution command
         run_cmd_map = {
-            "c": f"gcc {exploit_file} -o /tmp/exploit_bin && /tmp/exploit_bin",
-            "cpp": f"g++ {exploit_file} -o /tmp/exploit_bin && /tmp/exploit_bin",
-            "python": f"python3 {exploit_file}",
-            "java": f"javac {exploit_file} && java -cp /tmp Exploit",
-            "javascript": f"node {exploit_file}",
+            "c": f"gcc {exploit_file} -o /tmp/exploit_bin && echo VULNGUARD_EXECUTION_STARTED && /tmp/exploit_bin",
+            "cpp": f"g++ {exploit_file} -o /tmp/exploit_bin && echo VULNGUARD_EXECUTION_STARTED && /tmp/exploit_bin",
+            "python": f"echo VULNGUARD_EXECUTION_STARTED && python3 {exploit_file}",
+            "java": f"javac {exploit_file} && echo VULNGUARD_EXECUTION_STARTED && java -cp /tmp/workspace Exploit",
+            "javascript": f"echo VULNGUARD_EXECUTION_STARTED && node {exploit_file}",
         }
         run_cmd = run_cmd_map.get(language, f"sh {exploit_file}")
 
@@ -359,7 +359,7 @@ class DockerRunner:
                     f"{compiler} -Dmain=vulnguard_target_main -c {shlex.quote(destination)} "
                     f"-o /tmp/vulnguard_target.o && "
                     f"{compiler} {shlex.quote(exploit_file)} /tmp/vulnguard_target.o "
-                    "-o /tmp/exploit_bin && /tmp/exploit_bin"
+                    "-o /tmp/exploit_bin && echo VULNGUARD_EXECUTION_STARTED && /tmp/exploit_bin"
                 )
             else:
                 run_cmd = f"{copy_target} && {run_cmd}"

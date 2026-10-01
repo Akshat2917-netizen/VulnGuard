@@ -68,12 +68,14 @@ Your task is to analyze the provided function for data flow defects (e.g., untru
 
 RULES:
 1. If the function operates correctly on all inputs, set vulnerability_found=false.
-2. If a data flow defect exists (such as improper string interpolation), provide a benign Python script that acts as a failing test case to demonstrate the flaw.
+2. If a data flow defect exists, provide a benign executable harness in the TARGET language ({language}). For C/C++, provide a main function that calls the declared target. For Python, import the workspace target as instructed below.
 3. IMPORTANT SAFETY RULE: Do NOT write malicious payloads (no DROP TABLE, no XSS alerts, no reverse shells). Instead, use benign inputs like `"active'"` or `"test_string"` that simply trigger a syntax error or unexpected behavior to prove the input is unsanitized.
 4. The test MUST produce detectable stdout output (e.g. print "DEFECT_TRIGGERED") when the defect is triggered.
 5. Do NOT perform any destructive system operations in the test case.
 6. The test MUST execute the target from the supplied workspace. Do not copy the target function into the test, because the Judge must run the same test against both the original and patched source.
 7. The success marker MUST NOT appear inside attacker-controlled input or data printed by the target. For command injection, use a benign isolated side effect (for example, create a file under /tmp), verify that side effect, and only then print the success marker.
+8. Set expected_stdout_regex to a unique success marker printed only after the security defect is proven. A harness without this regex is invalid.
+9. The harness must create every prerequisite it needs before calling the target, including temporary database schemas, rows, files, and environment values. Its assertion must succeed for the original source and fail for a secure patch.
 
 You must output valid JSON data containing your analysis. Do NOT output the schema itself. Your JSON output MUST conform to the following schema:
 {schema}
@@ -262,7 +264,13 @@ def _workspace_target_instruction(state: VulnGuardState) -> str:
 def _exploit_validation_error(report: RedAgentReport, state: VulnGuardState) -> str | None:
     """Reject Python PoCs that do not exercise the uploaded target module."""
     harness = report.exploit_code_harness
-    if not harness or state.get("language") != "python":
+    if not harness:
+        return None
+    if not report.expected_stdout_regex:
+        return "the harness has no expected_stdout_regex success signal"
+    if not _validate_exploit_language(report, state.get("language", "")):
+        return f"the harness does not match target language '{state.get('language', '')}'"
+    if state.get("language") != "python":
         return None
 
     try:
