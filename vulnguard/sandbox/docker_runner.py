@@ -328,7 +328,8 @@ class DockerRunner:
         """
         ext_map = {"c": "c", "cpp": "cpp", "python": "py", "java": "java", "javascript": "js"}
         ext = ext_map.get(language, "txt")
-        exploit_file = f"/tmp/exploit.{ext}"
+        exploit_name = "Exploit.java" if language == "java" else f"vulnguard_exploit.{ext}"
+        exploit_file = f"/tmp/workspace/{exploit_name}"
 
         # Build execution command
         run_cmd_map = {
@@ -344,12 +345,15 @@ class DockerRunner:
         if target_code and file_path:
             container_file = f"/tmp/{Path(file_path).name}"
             extra[container_file] = target_code
-            if repo_root:
-                rel_path = _workspace_relative_path(file_path, repo_root)
-                destination = f"/tmp/workspace/{rel_path}"
-                run_cmd = (
-                    f"cp -- {shlex.quote(container_file)} {shlex.quote(destination)} && {run_cmd}"
-                )
+            rel_path = (
+                _workspace_relative_path(file_path, repo_root)
+                if repo_root
+                else Path(file_path).name
+            )
+            destination = f"/tmp/workspace/{rel_path}"
+            run_cmd = (
+                f"cp -- {shlex.quote(container_file)} {shlex.quote(destination)} && {run_cmd}"
+            )
 
         return self._run_container(
             command=run_cmd,

@@ -223,6 +223,14 @@ def _validate(state: VulnGuardState) -> tuple[JudgeVerdict, str]:
 
     # ── Step 3a: Exploit on unpatched (should demonstrate vulnerability) ──
     if state.get("exploit_harness"):
+        from vulnguard.agents.red_agent import RedAgentReport, _exploit_validation_error
+
+        harness_error = _exploit_validation_error(
+            RedAgentReport.model_validate(state.get("red_report") or {}), state
+        )
+        if harness_error:
+            return JudgeVerdict.EXPLOIT_NOT_REPRODUCED, f"Invalid exploit harness: {harness_error}"
+
         expected_regex = state.get("expected_stdout_regex")
 
         def exploit_succeeded(success_code: bool, logs: str) -> bool:

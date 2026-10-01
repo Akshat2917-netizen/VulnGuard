@@ -123,6 +123,24 @@ class TestSandboxCommands:
         with pytest.raises(ValueError, match="inside the repository"):
             _workspace_relative_path(str(tmp_path.parent / "outside.py"), str(tmp_path))
 
+    def test_python_exploit_runs_from_workspace(self, tmp_path):
+        target = tmp_path / "target.py"
+        target.write_text("def target(): pass")
+        runner = DockerRunner.__new__(DockerRunner)
+        runner._run_container = MagicMock(return_value=CommandResult(True, 0, "", ""))
+
+        runner.run_exploit(
+            repo_root="",
+            exploit_code="from target import target",
+            target_code=target.read_text(),
+            file_path=str(target),
+            language="python",
+        )
+
+        kwargs = runner._run_container.call_args.kwargs
+        assert "python3 /tmp/workspace/vulnguard_exploit.py" in kwargs["command"]
+        assert "/tmp/workspace/target.py" in kwargs["command"]
+
     def test_files_are_mounted_read_only_before_container_starts(self):
         runner = DockerRunner.__new__(DockerRunner)
         runner._client = MagicMock()
@@ -159,3 +177,22 @@ def test_sandbox_executes_as_unprivileged_user():
 
     assert result.success, result.combined_output
     assert "SANDBOX_OK" in result.stdout
+
+
+@pytest.mark.docker
+def test_python_exploit_imports_single_file_target():
+    if not check_docker_available():
+        pytest.skip("Docker daemon is not available")
+
+    target_code = "def value():\n    return 'TARGET_IMPORTED'\n"
+    runner = DockerRunner()
+    result = runner.run_exploit(
+        repo_root="",
+        exploit_code="from sample_target import value\nprint(value())\n",
+        target_code=target_code,
+        file_path="sample_target.py",
+        language="python",
+    )
+
+    assert result.success, result.combined_output
+    assert "TARGET_IMPORTED" in result.stdout

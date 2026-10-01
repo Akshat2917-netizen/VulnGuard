@@ -9,10 +9,12 @@ language-match validation (EC-7.2).
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -207,6 +209,75 @@ def _validate_exploit_language(report: RedAgentReport, target_language: str) -> 
     return bool(re.search(pattern, report.exploit_code_harness))
 
 
+def _exploit_validation_error(report: RedAgentReport, state: VulnGuardState) -> str | None:
+    """Reject Python PoCs that do not exercise the uploaded target module."""
+    harness = report.exploit_code_harness
+    if not harness or state.get("language") != "python":
+        return None
+
+    try:
+        tree = ast.parse(harness)
+    except SyntaxError:
+        return "the Python exploit harness is not valid syntax"
+
+    target_name = state.get("function_id", "").rsplit(":", 1)[-1]
+    if target_name and any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == target_name
+        for node in ast.walk(tree)
+    ):
+        return f"the harness redefines target '{target_name}' instead of importing it"
+
+    file_path = state.get("file_path", "")
+    module_names = {Path(file_path).stem} if file_path else set()
+    repo_root = state.get("repo_root", "")
+    if file_path and repo_root:
+        try:
+            relative = Path(file_path).resolve().relative_to(Path(repo_root).resolve())
+            module_names.add(".".join(relative.with_suffix("").parts))
+        except ValueError:
+            pass
+
+    imported_modules = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    imported_modules.update(
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+    if module_names and not any(
+        imported == module or imported.endswith(f".{module}")
+        for imported in imported_modules
+        for module in module_names
+    ):
+        return "the harness does not import the uploaded target module"
+
+    expected = report.expected_stdout_regex
+    if expected:
+        for handler in (node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)):
+            catches_any = handler.type is None or (
+                isinstance(handler.type, ast.Name)
+                and handler.type.id in {"Exception", "BaseException"}
+            )
+            if catches_any:
+                strings = (
+                    node.value
+                    for statement in handler.body
+                    for node in ast.walk(statement)
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                )
+                try:
+                    if any(re.search(expected, value) for value in strings):
+                        return "the harness reports success for any exception, causing false positives"
+                except re.error:
+                    return "expected_stdout_regex is not a valid regular expression"
+
+    return None
+
+
 def _sanitize_exploit(report: RedAgentReport) -> RedAgentReport:
     """Remove dangerous patterns from exploit code (Section 4.3)."""
     if report.exploit_code_harness and _DANGEROUS_PATTERNS.search(report.exploit_code_harness):
@@ -266,13 +337,22 @@ def red_agent_node(state: VulnGuardState) -> dict[str, Any]:
     # Sanitize dangerous payloads
     report = _sanitize_exploit(report)
 
-    # Validate exploit language match (EC-7.2)
-    if report.vulnerability_found and not _validate_exploit_language(report, state["language"]):
-        logger.warning("Exploit language mismatch — re-prompting once")
+    # Validate that the PoC can exercise the real workspace target.
+    validation_error = None
+    if report.vulnerability_found:
+        if not _validate_exploit_language(report, state["language"]):
+            validation_error = f"the test code does not match {state['language']}"
+        else:
+            validation_error = _exploit_validation_error(report, state)
+
+    if validation_error:
+        logger.warning("Invalid exploit harness (%s) — re-prompting once", validation_error)
         messages.append({
             "role": "user",
-            "content": f"Your test code does not match the target language ({state['language']}). "
-            f"Please regenerate the test in {state['language']}.",
+            "content": f"Your exploit harness is invalid because {validation_error}. "
+            f"Regenerate it in {state['language']}. It must import and invoke the supplied "
+            "workspace target, must not redefine target code, and must not treat arbitrary "
+            "exceptions as proof of exploitation.",
         })
         try:
             raw_retry = _call_llm(messages, risk_score=state.get("risk_score", 100.0))

@@ -12,6 +12,7 @@ from vulnguard.agents.state import VulnGuardState, initial_state
 from vulnguard.agents.red_agent import (
     RedAgentReport,
     _call_llm,
+    _exploit_validation_error,
     red_agent_node,
     _validate_exploit_language,
     _sanitize_exploit,
@@ -121,6 +122,44 @@ class TestExploitLanguageValidation:
     def test_no_exploit_always_valid(self):
         report = RedAgentReport(vulnerability_found=True, exploit_code_harness=None)
         assert _validate_exploit_language(report, "c") is True
+
+    def test_rejects_harness_that_redefines_python_target(self):
+        report = RedAgentReport(
+            vulnerability_found=True,
+            exploit_code_harness="def update_user_status(value):\n    print(value)",
+        )
+        state = initial_state("database.py:update_user_status", "pass", "python", 90.0, {})
+        state["file_path"] = "database.py"
+
+        assert "redefines target" in _exploit_validation_error(report, state)
+
+    def test_accepts_harness_that_imports_python_target(self):
+        report = RedAgentReport(
+            vulnerability_found=True,
+            exploit_code_harness=(
+                "from vuln_taint_flow.database import Database\n"
+                "print(Database)"
+            ),
+        )
+        state = initial_state("vuln_taint_flow/database.py:update_user_status", "pass", "python", 90.0, {})
+        state["file_path"] = "vuln_taint_flow/database.py"
+
+        assert _exploit_validation_error(report, state) is None
+
+    def test_rejects_generic_exception_as_exploit_success(self):
+        report = RedAgentReport(
+            vulnerability_found=True,
+            exploit_code_harness=(
+                "from vuln_sqli import get_user\n"
+                "try:\n    get_user('x')\n"
+                "except Exception:\n    print('DEFECT_TRIGGERED')"
+            ),
+            expected_stdout_regex="DEFECT_TRIGGERED",
+        )
+        state = initial_state("vuln_sqli.py:get_user", "pass", "python", 90.0, {})
+        state["file_path"] = "vuln_sqli.py"
+
+        assert "false positives" in _exploit_validation_error(report, state)
 
 
 class TestExploitSanitization:
