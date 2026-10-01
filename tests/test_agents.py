@@ -356,6 +356,10 @@ class TestJudgeVerdict:
         logs = "VULNGUARD_EXECUTION_STARTED\n*** stack smashing detected ***: terminated"
         assert _exploit_succeeded(False, logs, "DEFECT_TRIGGERED", "BUFFER_OVERFLOW")
 
+    def test_safe_memory_output_does_not_match_broad_exploit_regex(self):
+        logs = "VULNGUARD_EXECUTION_STARTED\nProcessed: AAAAAAAAAAAAAAA"
+        assert not _exploit_succeeded(True, logs, r"Processed: A+", "BUFFER_OVERFLOW")
+
     def test_compiler_error_does_not_reproduce_exploit(self):
         logs = "undefined reference; source contains DEFECT_TRIGGERED"
         assert not _exploit_succeeded(False, logs, "DEFECT_TRIGGERED", "BUFFER_OVERFLOW")

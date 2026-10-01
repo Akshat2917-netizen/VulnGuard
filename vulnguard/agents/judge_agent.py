@@ -63,8 +63,8 @@ def _exploit_succeeded(
         marker in vulnerability_type.upper()
         for marker in ("BUFFER", "MEMORY", "USE_AFTER_FREE", "OUT_OF_BOUNDS")
     )
-    if memory_defect and _MEMORY_CRASH_PATTERN.search(logs):
-        return True
+    if memory_defect:
+        return bool(_MEMORY_CRASH_PATTERN.search(logs))
 
     if expected_regex:
         try:
