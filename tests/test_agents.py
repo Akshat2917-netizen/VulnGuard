@@ -17,7 +17,14 @@ from vulnguard.agents.red_agent import (
     _sanitize_exploit,
 )
 from vulnguard.agents.blue_agent import _check_ast_loc_delta
-from vulnguard.agents.judge_agent import JudgeVerdict, _truncate_error_logs, _validate, judge_agent_node
+from vulnguard.agents.judge_agent import (
+    JudgeVerdict,
+    _run_tests,
+    _truncate_error_logs,
+    _validate,
+    judge_agent_node,
+)
+from vulnguard.sandbox.docker_runner import CommandResult
 
 
 class TestInitialState:
@@ -189,6 +196,22 @@ class TestJudgeVerdict:
 
     def test_pass_is_pass(self):
         assert JudgeVerdict.PASS.value == "PASS"
+
+    def test_no_collected_tests_are_skipped(self):
+        state = initial_state("fn", "def fn():\n    return 1", "python", 90.0, {})
+        runner = MagicMock()
+        runner.run_tests.return_value = CommandResult(
+            success=False,
+            exit_code=5,
+            stdout="no tests ran in 0.00s",
+            stderr="",
+        )
+
+        with patch("vulnguard.sandbox.docker_runner.DockerRunner", return_value=runner):
+            success, message = _run_tests(state)
+
+        assert success is True
+        assert "skipped" in message
 
     def test_missing_docker_returns_static_only_verdict(self):
         state = initial_state("fn", "def fn():\n    return 1", "python", 90.0, {})

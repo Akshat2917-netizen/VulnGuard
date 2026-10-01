@@ -129,6 +129,8 @@ def _run_tests(state: VulnGuardState) -> tuple[bool, str]:
             file_path=state.get("file_path", ""),
             code=_get_full_file_code(state, use_patched=True),
         )
+        if result.exit_code == 5 and "no tests ran" in result.combined_output.lower():
+            return True, "No tests discovered; regression test step skipped"
         return result.success, result.combined_output
     except ImportError:
         logger.info("Docker not available — skipping test suite")
