@@ -84,7 +84,7 @@ class ModelRoutingConfig:
     high_risk_model: str = _env("VULNGUARD_HIGH_RISK_MODEL", "gemini-3.1-pro-preview")
     # Medium-risk tier (score 65-79) — single-file, textbook vulns
     medium_risk_provider: str = _env("VULNGUARD_MEDIUM_RISK_PROVIDER", "gemini")
-    medium_risk_model: str = _env("VULNGUARD_MEDIUM_RISK_MODEL", "gemini-3.8-flash")
+    medium_risk_model: str = _env("VULNGUARD_MEDIUM_RISK_MODEL", "gemini-3.1-pro-preview")
 
     def get_model_for_score(self, risk_score: float) -> tuple[str, str]:
         """Return (provider, model_name) for the given risk score."""

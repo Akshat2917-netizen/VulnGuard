@@ -6,4 +6,5 @@ data/llm_usage.jsonl
 data/benchmarks*/
 *.parquet
 **/__pycache__/
+.venv/
 *.pyc

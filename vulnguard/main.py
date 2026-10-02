@@ -2,6 +2,7 @@
 VulnGuard AI — CLI entry point.
 
 Subcommands:
+  vulnguard doctor      - Verify Gemini and Docker prerequisites
   vulnguard train       - Train/retrain the ML triage model
   vulnguard scan        - Full pipeline scan of a repository
   vulnguard benchmark   - Run comparative benchmarks
@@ -29,6 +30,82 @@ def _setup_logging(verbose: bool = False):
         format="%(asctime)s │ %(name)-28s │ %(levelname)-7s │ %(message)s",
         datefmt="%H:%M:%S",
     )
+
+
+def cmd_doctor(args):
+    """Validate the runtime configuration before starting the dashboard."""
+    problems = []
+    if sys.version_info[:2] != (3, 12):
+        problems.append(
+            f"Use Python 3.12 in .venv; current interpreter is {sys.version.split()[0]}"
+        )
+    else:
+        print(f"[OK] Python: {sys.version.split()[0]}")
+
+    try:
+        import sklearn
+        import xgboost
+
+        if sklearn.__version__ != "1.8.0":
+            problems.append(
+                f"Install scikit-learn 1.8.0; current version is {sklearn.__version__}"
+            )
+        else:
+            print("[OK] scikit-learn: 1.8.0")
+        if xgboost.__version__ != "3.3.0":
+            problems.append(f"Install xgboost 3.3.0; current version is {xgboost.__version__}")
+        else:
+            print("[OK] xgboost: 3.3.0")
+    except ImportError as exc:
+        problems.append(f"Install Python requirements: {exc}")
+
+    if not cfg.llm.api_key or cfg.llm.api_key.startswith("your-"):
+        problems.append("Set GEMINI_API_KEY in .env")
+    else:
+        print("[OK] Gemini API key is configured")
+
+    routes = {
+        cfg.llm.provider,
+        cfg.routing.high_risk_provider,
+        cfg.routing.medium_risk_provider,
+    }
+    if routes != {"gemini"}:
+        problems.append(f"All LLM routes must use Gemini; found: {', '.join(sorted(routes))}")
+    else:
+        print(
+            "[OK] Gemini routes: "
+            f"{cfg.routing.high_risk_model} / {cfg.routing.medium_risk_model}"
+        )
+
+    if cfg.llm.api_key and routes == {"gemini"}:
+        try:
+            from vulnguard.llm_runtime import completion, response_text
+
+            response = completion(
+                model=f"gemini/{cfg.routing.high_risk_model}",
+                messages=[{"role": "user", "content": "Reply with OK."}],
+                max_tokens=256,
+            )
+            response_text(response)
+            print("[OK] Gemini live request")
+        except Exception as exc:
+            problems.append(f"Gemini live request failed: {exc}")
+
+    try:
+        from vulnguard.sandbox.docker_runner import ensure_sandbox_ready
+
+        ensure_sandbox_ready(build_if_missing=args.build_sandbox)
+        print(f"[OK] Docker sandbox: {cfg.sandbox.sandbox_image}")
+    except Exception as exc:
+        problems.append(str(exc))
+
+    if problems:
+        print("\nSetup is not ready:")
+        for problem in problems:
+            print(f"[FAIL] {problem}")
+        raise SystemExit(1)
+
+    print("\nVulnGuard is ready. Start the backend and frontend in two terminals.")
 
 
 # ── Subcommand: train ─────────────────────────────────────────────────────
@@ -322,6 +399,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    # doctor
+    p_doctor = sub.add_parser("doctor", help="Verify Gemini and Docker prerequisites")
+    p_doctor.add_argument(
+        "--build-sandbox",
+        action="store_true",
+        help="Build the sandbox image through the Docker API when it is missing",
+    )
+    p_doctor.set_defaults(func=cmd_doctor)
 
     # train
     p_train = sub.add_parser("train", help="Train the ML triage classifier")

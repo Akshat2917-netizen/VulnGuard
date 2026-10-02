@@ -377,7 +377,7 @@ def _call_llm(messages: list[dict], risk_score: float = 100.0, retries: int = 3)
 
     provider, model_name = cfg.routing.get_model_for_score(risk_score)
     model = f"{provider}/{model_name}"
-    from vulnguard.llm_runtime import completion
+    from vulnguard.llm_runtime import completion, response_text
 
     logger.info("Model routing: risk=%.1f → %s", risk_score, model)
 
@@ -390,7 +390,7 @@ def _call_llm(messages: list[dict], risk_score: float = 100.0, retries: int = 3)
                 max_tokens=cfg.llm.max_tokens,
                 response_format={"type": "json_object"},
             )
-            raw_response = response.choices[0].message.content
+            raw_response = response_text(response)
             
             if "```json" in raw_response:
                 raw_response = raw_response.split("```json")[1].split("```")[0].strip()

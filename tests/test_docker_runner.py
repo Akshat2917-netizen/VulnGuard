@@ -17,6 +17,7 @@ from vulnguard.sandbox.docker_runner import (
     CommandResult,
     DockerRunner,
     check_docker_available,
+    ensure_sandbox_ready,
 )
 
 
@@ -55,10 +56,33 @@ class TestDockerNotAvailable:
 
         try:
             with patch("docker.from_env", return_value=client):
-                with pytest.raises(DockerNotAvailableError, match="docker build"):
+                with pytest.raises(DockerNotAvailableError, match="doctor --build-sandbox"):
                     docker_runner._get_client()
         finally:
             docker_runner._docker_client = None
+
+    def test_availability_recovers_without_backend_restart(self):
+        with patch(
+            "vulnguard.sandbox.docker_runner._get_client",
+            side_effect=[DockerNotAvailableError("not ready"), MagicMock()],
+        ):
+            assert check_docker_available() is False
+            assert check_docker_available() is True
+
+    def test_doctor_can_build_missing_sandbox_image(self):
+        import vulnguard.sandbox.docker_runner as docker_runner
+
+        client = MagicMock()
+        client.images.get.side_effect = docker.errors.ImageNotFound("missing")
+        docker_runner._docker_client = None
+
+        try:
+            with patch("docker.from_env", return_value=client):
+                assert ensure_sandbox_ready(build_if_missing=True) is client
+        finally:
+            docker_runner._docker_client = None
+
+        client.images.build.assert_called_once()
 
 
 class TestCommandResult:

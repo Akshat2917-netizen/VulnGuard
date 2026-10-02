@@ -6,7 +6,7 @@ Python, C, C++, Java, and JavaScript repositories.
 
 ## Prerequisites
 
-- Python 3.11
+- Python 3.12
 - Node.js 20 or newer
 - Docker Desktop for sandbox validation
 - An API key for the configured LLM provider
@@ -14,21 +14,26 @@ Python, C, C++, Java, and JavaScript repositories.
 ## Setup
 
 ```powershell
-py -3.11 -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Set `GEMINI_API_KEY` in `.env`. VulnGuard routes high-risk work to
-`gemini-3.1-pro-preview` and medium-risk work to `gemini-3.8-flash`.
+Set `GEMINI_API_KEY` in `.env`. The stable profile routes both risk tiers to
+`gemini-3.1-pro-preview` because agent scans require reliable structured output.
 
-Build the isolated multi-language sandbox image:
+Run the preflight once. It makes a small live Gemini request, connects to Docker,
+and builds the isolated multi-language sandbox image when it is missing:
 
 ```powershell
-docker build -t vulnguard-sandbox:latest -f vulnguard/sandbox/Dockerfile vulnguard/sandbox
+python -m vulnguard.main doctor --build-sandbox
 ```
+
+Do not start the backend until every doctor check says `[OK]`. Run it again after
+Docker Desktop upgrades or restarts; the backend recovers when Docker becomes
+available without needing its own restart.
 
 ## Run the dashboard
 

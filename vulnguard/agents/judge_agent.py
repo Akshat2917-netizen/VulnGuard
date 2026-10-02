@@ -237,15 +237,14 @@ def _validate(state: VulnGuardState) -> tuple[JudgeVerdict, str]:
         if harness_error:
             return JudgeVerdict.EXPLOIT_NOT_REPRODUCED, f"Invalid exploit harness: {harness_error}"
 
-    from vulnguard.sandbox.docker_runner import check_docker_available
+    from vulnguard.sandbox.docker_runner import check_docker_available, get_docker_error
 
     if not check_docker_available():
+        detail = get_docker_error()
         return (
             JudgeVerdict.SANDBOX_UNAVAILABLE,
-            "Static syntax and patch guardrail checks passed. Install and start Docker, "
-            "then build the sandbox image with `docker build -t vulnguard-sandbox:latest "
-            "-f vulnguard/sandbox/Dockerfile vulnguard/sandbox` to run builds, tests, "
-            "and exploit validation.",
+            "Static syntax and patch guardrail checks passed, but runtime validation did not run. "
+            f"{detail or 'Run `python -m vulnguard.main doctor --build-sandbox`.'}",
         )
 
     repo_root = state.get("repo_root", "")

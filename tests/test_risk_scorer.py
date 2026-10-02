@@ -53,6 +53,37 @@ class TestRiskScorerLanguageRouting:
             assert result.bypass_reason is None
             assert 0 <= result.risk_score <= 100
 
+    @pytest.mark.parametrize(
+        ("code", "language", "signal"),
+        [
+            ("void f(char *x) { strcpy(buf, x); }", "c", "UNBOUNDED_C_API"),
+            ("void f(char *x) { printf(x); }", "c", "NON_LITERAL_FORMAT_STRING"),
+            ("void f(char *p) { if (!access(p, 2)) open(p, 1); }", "c", "TOCTOU_FILE_ACCESS"),
+            ("def f(x):\n    return os.system(x)", "python", "SHELL_EXECUTION"),
+            (
+                "def f(cursor, value):\n    query = f\"UPDATE users SET name='{value}'\"\n    cursor.executescript(query)",
+                "python",
+                "DYNAMIC_SQL",
+            ),
+        ],
+    )
+    def test_known_dangerous_patterns_bypass_ml_threshold(self, code, language, signal):
+        from vulnguard.models.risk_scorer import RiskScorer
+
+        mock_model = MagicMock()
+        mock_model.predict_proba.return_value = np.array([[0.99, 0.01]])
+        scorer = RiskScorer.__new__(RiskScorer)
+        scorer._model = mock_model
+
+        with patch("vulnguard.models.risk_scorer.cfg") as mock_cfg:
+            mock_cfg.triage.mega_function_loc_limit = 2000
+            mock_cfg.triage.template_dampening_factor = 0.5
+            mock_cfg.triage.risk_threshold = 65
+            result = scorer.score(code, language)
+
+        assert result.risk_score >= 65
+        assert result.bypass_reason == f"STATIC_SIGNAL:{signal}"
+
 
 class TestMegaFunctionSlicing:
     """Test Section 4.1: Mega-function handling."""

@@ -8,6 +8,7 @@ template dampening (EC-5.5), and mega-function slicing (Section 4.1).
 from __future__ import annotations
 
 import logging
+import re
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +24,29 @@ logger = logging.getLogger(__name__)
 
 # Supported languages for ML triage
 _ML_SUPPORTED_LANGUAGES = frozenset({"python", "c", "cpp"})
+
+
+def _static_security_signal(code: str, language: str) -> str | None:
+    """Return a high-confidence signal that must bypass probabilistic triage."""
+    if language in {"c", "cpp"}:
+        if re.search(r"\b(?:strcpy|strcat|sprintf|vsprintf|gets)\s*\(", code):
+            return "UNBOUNDED_C_API"
+        if re.search(r"\b(?:printf|vprintf)\s*\(\s*(?![\"'])\w+\s*\)", code):
+            return "NON_LITERAL_FORMAT_STRING"
+        if re.search(r"\baccess\s*\(", code) and re.search(
+            r"\b(?:open|fopen|unlink|rename|chmod|chown)\s*\(", code
+        ):
+            return "TOCTOU_FILE_ACCESS"
+    elif language == "python":
+        if re.search(r"\bos\.(?:system|popen)\s*\(|\bshell\s*=\s*True\b", code):
+            return "SHELL_EXECUTION"
+        dynamic_sql = re.search(
+            r"(?is)\b(?:query|sql)\s*=\s*(?:f[\"']|[^\n]*(?:\+|\.format\s*\())",
+            code,
+        )
+        if dynamic_sql and re.search(r"\b(?:execute|executemany|executescript)\s*\(", code):
+            return "DYNAMIC_SQL"
+    return None
 
 
 @dataclass
@@ -79,14 +103,21 @@ class RiskScorer:
                 bypass_reason=f"LANGUAGE_UNSUPPORTED:{language}",
             )
 
+        static_signal = _static_security_signal(code, language)
+
         # ── Mega-function slicing (Section 4.1) ──────────
         loc = len(code.splitlines())
         if loc > cfg.triage.mega_function_loc_limit:
-            return self._score_mega_function(code, language)
+            result = self._score_mega_function(code, language)
+        else:
+            # ── Standard scoring ──────────────────────────────
+            feat = extract_features(code, language)
+            result = self._score_from_features(feat)
 
-        # ── Standard scoring ──────────────────────────────
-        feat = extract_features(code, language)
-        return self._score_from_features(feat)
+        if static_signal:
+            result.risk_score = max(result.risk_score, float(cfg.triage.risk_threshold))
+            result.bypass_reason = f"STATIC_SIGNAL:{static_signal}"
+        return result
 
     def _score_from_features(self, feat: FeatureResult) -> RiskResult:
         """Convert extracted features to a risk score via the trained model."""

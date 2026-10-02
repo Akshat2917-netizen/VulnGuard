@@ -62,6 +62,17 @@ def completion(**kwargs: Any):
     return response
 
 
+def response_text(response: Any) -> str:
+    """Return non-empty assistant text or raise a retryable error."""
+    try:
+        content = response.choices[0].message.content
+    except (AttributeError, IndexError, TypeError) as exc:
+        raise ValueError("LLM response did not contain an assistant message") from exc
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("LLM returned empty content; retry with the configured stable model")
+    return content.strip()
+
+
 def _usage_value(usage: Any, key: str) -> int:
     if isinstance(usage, dict):
         return int(usage.get(key, 0) or 0)

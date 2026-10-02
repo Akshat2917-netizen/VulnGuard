@@ -1,6 +1,8 @@
 import os
 from types import SimpleNamespace
 
+import pytest
+
 import vulnguard.llm_runtime as llm_runtime
 
 
@@ -65,3 +67,10 @@ def test_usage_includes_reasoning_tokens_in_output_and_cost(tmp_path, monkeypatc
 
     assert summary[0]["output_tokens"] == 50
     assert summary[0]["estimated_cost_usd"] == 0.2
+
+
+def test_response_text_rejects_empty_model_content():
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=None))])
+
+    with pytest.raises(ValueError, match="empty content"):
+        llm_runtime.response_text(response)

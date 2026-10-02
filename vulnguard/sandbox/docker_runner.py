@@ -16,7 +16,6 @@ import shlex
 import sys
 import tempfile
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Optional
 from uuid import uuid4
@@ -89,34 +88,67 @@ def _workspace_relative_path(file_path: str, repo_root: str) -> str:
 # ── Docker client singleton ──────────────────────────────────────────────
 
 _docker_client = None
+_last_docker_error = ""
+
+
+def _docker_error_message(exc: Exception) -> str:
+    detail = str(exc).strip() or exc.__class__.__name__
+    if "Access is denied" in detail or "CreateFile" in detail and "(5," in detail:
+        return (
+            "Docker Desktop is running, but this process cannot access its Windows named pipe. "
+            "Restart Docker Desktop and this terminal under the same Windows user, then run "
+            "`python -m vulnguard.main doctor --build-sandbox`. "
+            f"Docker error: {detail}"
+        )
+    return f"Docker engine is not ready: {detail}"
+
+
+def ensure_sandbox_ready(build_if_missing: bool = False):
+    """Connect to Docker and optionally build the configured sandbox image."""
+    global _docker_client, _last_docker_error
+    try:
+        import docker
+
+        client = docker.from_env()
+        client.ping()
+        try:
+            client.images.get(cfg.sandbox.sandbox_image)
+        except docker.errors.ImageNotFound as exc:
+            if not build_if_missing:
+                raise DockerNotAvailableError(
+                    f"Docker image '{cfg.sandbox.sandbox_image}' is missing. Run:\n"
+                    "python -m vulnguard.main doctor --build-sandbox"
+                ) from exc
+            sandbox_dir = Path(__file__).resolve().parent
+            client.images.build(
+                path=str(sandbox_dir),
+                dockerfile="Dockerfile",
+                tag=cfg.sandbox.sandbox_image,
+                rm=True,
+            )
+        _docker_client = client
+        _last_docker_error = ""
+        return client
+    except DockerNotAvailableError as exc:
+        _last_docker_error = str(exc)
+        raise
+    except Exception as exc:
+        _last_docker_error = _docker_error_message(exc)
+        logger.error("Docker health check failed: %s", exc)
+        raise DockerNotAvailableError(_last_docker_error) from exc
 
 
 def _get_client():
     """Get or create Docker client with health check (EC-8.1)."""
     global _docker_client
     if _docker_client is not None:
-        return _docker_client
-
-    try:
-        import docker
-
-        client = docker.from_env()
-        client.ping()  # Health check
         try:
-            client.images.get(cfg.sandbox.sandbox_image)
-        except docker.errors.ImageNotFound as exc:
-            raise DockerNotAvailableError(
-                f"Docker image '{cfg.sandbox.sandbox_image}' is missing. Build it with:\n"
-                f"docker build -t {cfg.sandbox.sandbox_image} "
-                "-f vulnguard/sandbox/Dockerfile vulnguard/sandbox"
-            ) from exc
-        _docker_client = client
-        return client
-    except DockerNotAvailableError:
-        raise
-    except Exception as exc:
-        logger.error("Docker health check failed: %s", exc)
-        raise DockerNotAvailableError() from exc
+            _docker_client.ping()
+            return _docker_client
+        except Exception:
+            _docker_client = None
+
+    return ensure_sandbox_ready()
 
 
 # ── Container execution ──────────────────────────────────────────────────
@@ -405,11 +437,15 @@ class DockerRunner:
         return "cd /tmp/workspace && python3 -m pytest -x 2>&1"
 
 
-@lru_cache(maxsize=1)
 def check_docker_available() -> bool:
-    """Check if Docker is available. Returns True if healthy, False otherwise."""
+    """Check Docker on every call so starting Desktop does not require a backend restart."""
     try:
         _get_client()
         return True
     except DockerNotAvailableError:
         return False
+
+
+def get_docker_error() -> str:
+    """Return the most recent actionable Docker diagnostic."""
+    return _last_docker_error
