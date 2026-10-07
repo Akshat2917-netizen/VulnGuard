@@ -9,11 +9,11 @@ import shutil
 import stat
 import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -116,6 +116,39 @@ def _scan_paths(func: dict[str, Any], upload_root: Path) -> tuple[Path, Path | N
     return file_path, repo_root
 
 
+def _safe_relative_path(value: str) -> PurePosixPath:
+    path = PurePosixPath(value.replace("\\", "/"))
+    if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError("Folder upload contains an unsafe path")
+    return path
+
+
+def _function_payloads(source_files: list[Path], repo_root: Path, is_repository: bool) -> list[dict]:
+    from vulnguard.data.parser import parse_file, read_source_file
+
+    functions = []
+    for source_path in source_files:
+        code = read_source_file(source_path)
+        relative_path = source_path.relative_to(repo_root).as_posix()
+        for chunk in parse_file(str(source_path), code):
+            functions.append(
+                {
+                    "id": f"{relative_path}:{chunk.function_name}",
+                    "name": chunk.function_name,
+                    "code": chunk.raw_source,
+                    "language": chunk.language,
+                    "file_path": str(source_path),
+                    "relative_path": relative_path,
+                    "repo_root": str(repo_root) if is_repository else "",
+                    "start_byte": chunk.start_byte,
+                    "end_byte": chunk.end_byte,
+                    "imports": chunk.imports,
+                    "callees": chunk.callees,
+                }
+            )
+    return functions
+
+
 def create_app(
     db_path: str | Path | None = None,
     upload_root: str | Path | None = None,
@@ -168,33 +201,64 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        from vulnguard.data.parser import parse_file, read_source_file
-
-        functions = []
-        for source_path in source_files:
-            code = read_source_file(source_path)
-            relative_path = source_path.relative_to(repo_root).as_posix()
-            for chunk in parse_file(str(source_path), code):
-                functions.append(
-                    {
-                        "id": f"{relative_path}:{chunk.function_name}",
-                        "name": chunk.function_name,
-                        "code": chunk.raw_source,
-                        "language": chunk.language,
-                        "file_path": str(source_path),
-                        "relative_path": relative_path,
-                        "repo_root": str(repo_root) if is_repository else "",
-                        "start_byte": chunk.start_byte,
-                        "end_byte": chunk.end_byte,
-                        "imports": chunk.imports,
-                        "callees": chunk.callees,
-                    }
-                )
+        functions = _function_payloads(source_files, repo_root, is_repository)
         return {
             "upload_id": upload_id,
             "repository": is_repository,
             "files_scanned": len(source_files),
             "functions": functions,
+        }
+
+    @app.post("/upload/folder")
+    async def upload_folder(
+        files: list[UploadFile] = File(...),
+        paths: list[str] = Form(...),
+    ):
+        if len(files) != len(paths):
+            raise HTTPException(status_code=400, detail="Each folder file must include its relative path")
+        if not files or len(files) > _MAX_ARCHIVE_FILES:
+            raise HTTPException(status_code=400, detail="Folder contains too many files")
+
+        upload_id = uuid4().hex
+        repo_root = managed_uploads / upload_id
+        repo_root.mkdir(parents=True)
+        saved_files: list[Path] = []
+        total_bytes = 0
+        seen_paths: set[str] = set()
+
+        try:
+            for file, raw_path in zip(files, paths):
+                relative = _safe_relative_path(raw_path)
+                relative_key = relative.as_posix().lower()
+                if relative_key in seen_paths:
+                    raise ValueError("Folder upload contains duplicate paths")
+                seen_paths.add(relative_key)
+
+                content = await _read_upload(file)
+                total_bytes += len(content)
+                if total_bytes > _MAX_EXTRACTED_BYTES:
+                    raise ValueError("Folder upload exceeds the 50 MB limit")
+
+                destination = repo_root.joinpath(*relative.parts).resolve()
+                if not _inside(destination, repo_root):
+                    raise ValueError("Folder upload contains an unsafe path")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(content)
+                saved_files.append(destination)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        from vulnguard.data.parser import iter_source_files
+
+        source_files = sorted(iter_source_files(repo_root))
+        if not source_files:
+            raise HTTPException(status_code=400, detail="Folder contains no supported source files")
+        return {
+            "upload_id": upload_id,
+            "repository": True,
+            "files_scanned": len(source_files),
+            "files_uploaded": len(saved_files),
+            "functions": _function_payloads(source_files, repo_root, True),
         }
 
     @app.websocket("/ws/scan")
